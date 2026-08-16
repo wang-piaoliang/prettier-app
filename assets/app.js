@@ -859,7 +859,9 @@
 
     // 照片和 entries.json 在同一次提交里：要么全成，要么全不成，
     // 不会出现「照片传上去了但记录没写」这种半截状态。
-    GitStore.commit(files, '记录 ' + d.date + '（' + id + '）')
+    GitStore.commit(files, '记录 ' + d.date + '（' + id + '）', function (t) {
+      msg.textContent = t + '…';
+    })
       .then(function () {
         bar.style.width = '85%';
         msg.textContent = '刷新…';
@@ -873,9 +875,12 @@
         go('timeline');
       })
       .catch(function (err) {
-        toast('保存失败：' + (err.message || err), true);
+        var where = err.step ? '「' + err.step + '」这一步：' : '';
+        toast('保存失败 · ' + where + (err.message || err), true);
+        msg.textContent = '失败了，草稿还在，可以直接重试';
+        bar.style.background = 'var(--focus)';
         btn.disabled = false;
-        prog.hidden = true;
+        btn.textContent = '重试保存';
       });
   }
 
@@ -984,6 +989,12 @@
   function renderProducts() {
     var host = $('#view-products');
     var list = allProducts();
+    var diag =
+      '<div class="card" style="margin-bottom:18px">' +
+        '<div class="tiny" style="margin-bottom:10px">云端连接</div>' +
+        '<button class="clear" id="diagBtn" type="button">检查读写权限</button>' +
+        '<div id="diagOut" class="tiny" style="margin-top:8px"></div>' +
+      '</div>';
 
     var head =
       '<div class="section-title">产品库</div>' +
@@ -994,7 +1005,7 @@
         '手动添加' +
       '</button>' +
       '<div id="scanOut"></div>' +
-      aiPickerHTML();
+      aiPickerHTML() + diag;
 
     if (!list.length) {
       host.innerHTML = head +
@@ -1021,6 +1032,19 @@
     }
 
     bindAIPicker(host);
+    $('#diagBtn', host).addEventListener('click', function () {
+      var o = $('#diagOut', host);
+      o.textContent = '检查中…';
+      GitStore.selftest().then(function (r) {
+        o.innerHTML = [
+          '仓库：' + (r.repo || '—') + (r.private ? '（私有）' : ''),
+          '读取：' + (r.read || '—'),
+          '写入：' + (r.write || '—'),
+          r.error ? '错误：' + esc(r.error) : '',
+          r.step ? '失败步骤：' + esc(r.step) : '',
+        ].filter(Boolean).join('<br>');
+      });
+    });
     $('#scanBtn', host).addEventListener('click', function () { $('#prodInput').click(); });
     $('#addProdBtn', host).addEventListener('click', addProductManually);
     host.addEventListener('click', function (ev) {

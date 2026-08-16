@@ -43,7 +43,12 @@
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     }).then(function (res) {
       if (res.status === 401) throw new Error('令牌无效或已过期');
-      if (res.status === 403) throw new Error('令牌权限不足（需要该仓库的 Contents 读写）');
+      if (res.status === 403) {
+        return res.text().then(function (t) {
+          if (/rate limit/i.test(t)) throw new Error('GitHub 限流了，等几分钟再试');
+          throw new Error('令牌权限不足 —— 需要这个仓库的 Contents: Read and write');
+        });
+      }
       if (res.status === 404) {
         var e = new Error('找不到：' + pathname);
         e.notFound = true;
@@ -129,10 +134,14 @@
      files: [{path, text}] 或 [{path, blob}]
      一次提交里可以带任意多个文件。 */
 
-  function commit(files, message) {
+  function commit(files, message, onStep) {
     var baseSha;
+    var lastStep = '';
+    var step = function (t) { lastStep = t; if (onStep) onStep(t); };
+    step('读取分支');
     return head().then(function (sha) {
       baseSha = sha;
+      step('上传文件（' + files.length + '）');
       // 每个文件先单独建 blob，再一起挂进 tree
       return Promise.all(files.map(function (f) {
         var enc = f.blob
@@ -146,20 +155,27 @@
         });
       }));
     }).then(function (treeItems) {
+      step('组织目录');
       return req(repoPath('/git/trees'), {
         method: 'POST',
         body: { base_tree: baseSha, tree: treeItems },
       });
     }).then(function (newTree) {
+      step('生成提交');
       return req(repoPath('/git/commits'), {
         method: 'POST',
         body: { message: message, tree: newTree.sha, parents: [baseSha] },
       });
     }).then(function (newCommit) {
+      step('更新分支');
       return req(repoPath('/git/refs/heads/' + cfg.branch), {
         method: 'PATCH',
         body: { sha: newCommit.sha },
       }).then(function () { return newCommit.sha; });
+    }).catch(function (err) {
+      // 把「在哪一步失败」带出去，光看 HTTP 码没法判断
+      err.step = lastStep;
+      throw err;
     });
   }
 
@@ -241,7 +257,35 @@
     }).catch(function () {});
   }
 
+  /* 自检：分别验证「能读」和「能写」，直接指出问题出在哪 */
+  function selftest() {
+    var out = { read: null, write: null };
+    return req(repoPath('')).then(function (r) {
+      out.repo = r.full_name;
+      out.private = r.private;
+      out.read = '✅ 能读';
+      return head();
+    }).then(function (sha) {
+      out.head = sha.slice(0, 7);
+      // 写一个探针文件再删掉，确认真的有写权限
+      return commit([{ path: '.probe', text: String(Date.now()) }], '连接自检');
+    }).then(function () {
+      out.write = '✅ 能写';
+      return commitDelete(['.probe'], '连接自检：清理');
+    }).then(function () {
+      out.cleanup = '✅ 已清理';
+      return out;
+    }).catch(function (err) {
+      out.error = err.message;
+      out.step = err.step || '';
+      if (!out.read) out.read = '❌ 读失败';
+      else if (!out.write) out.write = '❌ 写失败';
+      return out;
+    });
+  }
+
   window.GitStore = {
+    selftest: selftest,
     configure: function (c) { Object.assign(cfg, c); },
     config: function () { return Object.assign({}, cfg, { token: cfg.token ? '***' : '' }); },
     req: req, repoPath: repoPath,
