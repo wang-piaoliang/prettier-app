@@ -908,6 +908,7 @@
     timeline: renderTimeline,
     trend: renderTrend,
     compose: renderCompose,
+    products: renderProducts,
     mainlines: renderMainlines,
   };
 
@@ -917,6 +918,174 @@
     $$('.tabbar button').forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
     window.scrollTo(0, 0);
     (RENDER[view] || function () {})();
+    hydratePhotos(document);
+  }
+
+  /* ================= 产品库 ================= */
+
+  function allProducts() { return (state.data && state.data.products) || []; }
+
+  function renderProducts() {
+    var host = $('#view-products');
+    var list = allProducts();
+
+    var head =
+      '<div class="section-title">产品库</div>' +
+      '<button class="btn ghost" id="scanBtn" type="button" style="margin-bottom:8px">' +
+        '拍产品照，AI 自动识别入库' +
+      '</button>' +
+      '<button class="btn ghost" id="addProdBtn" type="button" style="margin-bottom:18px">' +
+        '手动添加' +
+      '</button>' +
+      '<div id="scanOut"></div>';
+
+    if (!list.length) {
+      host.innerHTML = head +
+        '<div class="empty"><strong>产品库还是空的</strong>' +
+        '把护肤品和彩妆拍一张照，AI 会认出品牌和品名并入库。<br>' +
+        '入库之后，「记一条」里就能直接勾选今天用了哪些。</div>';
+    } else {
+      // 在用的排前面，其余按分类归堆
+      var using = list.filter(function (p) { return p.status !== 'retired'; });
+      var out = [];
+      ['skincare', 'makeup'].forEach(function (kind) {
+        var rows = using.filter(function (p) { return (p.kind || 'skincare') === kind; });
+        if (!rows.length) return;
+        out.push('<div class="cat-head">' + (kind === 'skincare' ? '护肤' : '彩妆') +
+                 ' · ' + rows.length + '</div>');
+        out.push(rows.map(prodCardHTML).join(''));
+      });
+      var retired = list.filter(function (p) { return p.status === 'retired'; });
+      if (retired.length) {
+        out.push('<div class="cat-head">已停用 · ' + retired.length + '</div>');
+        out.push(retired.map(prodCardHTML).join(''));
+      }
+      host.innerHTML = head + out.join('');
+    }
+
+    $('#scanBtn', host).addEventListener('click', function () { $('#prodInput').click(); });
+    $('#addProdBtn', host).addEventListener('click', addProductManually);
+    host.addEventListener('click', function (ev) {
+      var b = ev.target.closest('[data-del]');
+      if (b) return removeProduct(b.dataset.del);
+      var t = ev.target.closest('[data-toggle]');
+      if (t) return toggleProduct(t.dataset.toggle);
+    });
+  }
+
+  function prodCardHTML(p) {
+    var sub = [p.brand, p.category].filter(Boolean).join(' · ');
+    return '<div class="prod-card">' +
+      (p.photo
+        ? '<img class="thumb" data-key="' + esc(p.photo) + '" alt="">'
+        : '<div class="thumb ph">▢</div>') +
+      '<div><div class="nm">' + esc(p.name) + '</div>' +
+      (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') + '</div>' +
+      '<div class="act">' +
+        '<button data-toggle="' + esc(p.id) + '">' +
+          (p.status === 'retired' ? '恢复' : '停用') + '</button>' +
+        '<button data-del="' + esc(p.id) + '">删除</button>' +
+      '</div></div>';
+  }
+
+  function saveProducts(list, message) {
+    var s = Object.assign({}, state.data);
+    delete s.entries;
+    s.products = list;
+    return GitStore.commit(
+      [{ path: 'settings.json', text: JSON.stringify(s, null, 2) }],
+      message
+    ).then(loadData).then(function () { go('products'); });
+  }
+
+  function removeProduct(id) {
+    var p = allProducts().filter(function (x) { return x.id === id; })[0];
+    if (!p || !confirm('从产品库删除「' + p.name + '」？')) return;
+    saveProducts(allProducts().filter(function (x) { return x.id !== id; }), '产品库：删除 ' + p.name)
+      .then(function () { toast('已删除'); })
+      .catch(function (e) { toast('失败：' + e.message, true); });
+  }
+
+  function toggleProduct(id) {
+    var list = allProducts().map(function (x) {
+      if (x.id !== id) return x;
+      return Object.assign({}, x, { status: x.status === 'retired' ? 'using' : 'retired' });
+    });
+    saveProducts(list, '产品库：切换状态').catch(function (e) { toast('失败：' + e.message, true); });
+  }
+
+  function addProductManually() {
+    var name = prompt('产品名（例：某某氨基酸洁面）');
+    if (!name) return;
+    var brand = prompt('品牌（可留空）') || '';
+    var kind = confirm('是彩妆吗？\n确定 = 彩妆，取消 = 护肤') ? 'makeup' : 'skincare';
+    var p = {
+      id: 'p' + Date.now().toString(36),
+      name: name.trim(), brand: brand.trim(), kind: kind,
+      status: 'using', addedAt: new Date().toISOString().slice(0, 10),
+    };
+    saveProducts(allProducts().concat([p]), '产品库：添加 ' + p.name)
+      .then(function () { toast('已入库'); })
+      .catch(function (e) { toast('失败：' + e.message, true); });
+  }
+
+  /* 拍产品 → AI 识别 → 只把【库里没有的】加进去 */
+  function scanProducts(files) {
+    if (!files || !files.length) return;
+    if (!PrettierAI.getKey()) {
+      var k = prompt('填一次阿里云百炼的 API Key（存在本机）：');
+      if (!k) return;
+      PrettierAI.setKey(k.trim());
+    }
+
+    var out = $('#scanOut');
+    out.innerHTML = '<div class="card" style="margin-bottom:18px"><div class="tiny">识别中…</div></div>';
+
+    Promise.all(Array.prototype.slice.call(files).map(function (f) {
+      return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+    })).then(function (blobs) {
+      return PrettierAI.identifyProducts(blobs).then(function (found) {
+        return { blobs: blobs, found: found };
+      });
+    }).then(function (r) {
+      var existing = allProducts();
+      var isNew = function (x) {
+        var key = (x.brand + x.name).replace(/\s/g, '').toLowerCase();
+        return !existing.some(function (p) {
+          return ((p.brand || '') + p.name).replace(/\s/g, '').toLowerCase() === key;
+        });
+      };
+      var fresh = (r.found.products || []).filter(isNew);
+      var dup = (r.found.products || []).length - fresh.length;
+
+      if (!fresh.length) {
+        out.innerHTML = '<div class="card" style="margin-bottom:18px"><div class="tiny">' +
+          '认出 ' + dup + ' 件，都已经在库里了，没有新增。</div></div>';
+        return;
+      }
+
+      out.innerHTML = '<div class="card" style="margin-bottom:18px">' +
+        '<div class="tiny" style="margin-bottom:8px">新认出 ' + fresh.length + ' 件' +
+        (dup ? '（另有 ' + dup + ' 件已在库）' : '') + '，正在入库…</div>' +
+        fresh.map(function (x) {
+          return '<div class="prow"><b>' + (x.kind === 'makeup' ? '彩妆' : '护肤') + '</b>' +
+                 '<span>' + esc([x.brand, x.name].filter(Boolean).join(' ')) + '</span></div>';
+        }).join('') + '</div>';
+
+      var now = new Date().toISOString().slice(0, 10);
+      var added = fresh.map(function (x, i) {
+        return {
+          id: 'p' + Date.now().toString(36) + i,
+          name: x.name, brand: x.brand || '', kind: x.kind || 'skincare',
+          category: x.category || '', status: 'using', addedAt: now,
+        };
+      });
+      return saveProducts(existing.concat(added), '产品库：AI 识别新增 ' + added.length + ' 件')
+        .then(function () { toast('新增 ' + added.length + ' 件'); });
+    }).catch(function (err) {
+      out.innerHTML = '';
+      toast('识别失败：' + (err.message || err), true);
+    });
   }
 
   /* ================= 灯箱（可左右滑） ================= */
@@ -1086,9 +1255,39 @@
         : 'wang-piaoliang/prettier-data';
     }
 
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js').catch(function () {});
+    // 页脚版本号：手机上一眼确认加载到第几版
+    var av = $('#appVersion');
+    if (av && window.PRETTIER_BUILD) {
+      av.textContent = 'prettier ' + PRETTIER_BUILD.v + ' · ' + PRETTIER_BUILD.at;
     }
+
+    /* 加到主屏后是 standalone 模式，Safari 不会像普通标签页那样每次导航都
+       重新检查 Service Worker —— 应用可以一直活着、一直用旧的外壳缓存，
+       除非彻底杀掉重开。所以：新 worker 接管时主动刷新一次，
+       并且每次回到前台都再检查一遍有没有新版本。 */
+    if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+      var hadController = !!navigator.serviceWorker.controller;
+      var reloading = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (reloading || !hadController) return;   // 首次安装不需要刷
+        reloading = true;
+        location.reload();
+      });
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+          .then(function (reg) {
+            reg.update();
+            document.addEventListener('visibilitychange', function () {
+              if (document.visibilityState === 'visible') reg.update();
+            });
+          }).catch(function () {});
+      });
+    }
+
+    $('#prodInput').addEventListener('change', function () {
+      scanProducts(this.files);
+      this.value = '';
+    });
   }
 
   document.addEventListener('DOMContentLoaded', init);

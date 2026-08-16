@@ -156,8 +156,63 @@
     });
   }
 
+  /* 认产品：拍瓶身/包装，识别品牌和品名 */
+  function identifyProducts(blobs) {
+    var key = getKey();
+    if (!key) return Promise.reject(new Error('还没填百炼 API Key'));
+
+    var prompt = [
+      '识别照片里的护肤品和彩妆产品。',
+      '',
+      '要求：',
+      '1. 只写你在包装上【真的看清了】的字。看不清品牌就把 brand 留空字符串，',
+      '   不要根据外观猜品牌 —— 猜错了会污染产品库。',
+      '2. 一张照片里有多件就都列出来。',
+      '3. kind 只能是 "skincare"（护肤）或 "makeup"（彩妆）。',
+      '4. category 用中文，例如：洁面、化妆水、精华、面霜、防晒、粉底、遮瑕、腮红、口红。',
+      '',
+      '严格输出 JSON，不要 markdown 代码块：',
+      '{"products":[{"brand":"","name":"","kind":"skincare","category":""}]}',
+      '',
+      '一件都没认出来就返回 {"products":[]}。',
+    ].join('\n');
+
+    return Promise.all(blobs.slice(0, 4).map(blobToB64)).then(function (b64s) {
+      var content = b64s.map(function (b) {
+        return { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + b } };
+      });
+      content.push({ type: 'text', text: prompt });
+      return fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+        body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: content }] }),
+      });
+    }).then(function (res) {
+      if (!res.ok) return res.text().then(function (t) {
+        throw new Error(res.status === 401 ? 'API Key 不对' : '百炼 ' + res.status);
+      });
+      return res.json();
+    }).then(function (data) {
+      var text = data && data.choices && data.choices[0] &&
+                 data.choices[0].message && data.choices[0].message.content;
+      var out = parseJSON(text || '{"products":[]}');
+      out.products = (out.products || []).filter(function (p) {
+        return p && p.name && String(p.name).trim();
+      }).map(function (p) {
+        return {
+          brand: String(p.brand || '').trim(),
+          name: String(p.name).trim(),
+          kind: p.kind === 'makeup' ? 'makeup' : 'skincare',
+          category: String(p.category || '').trim(),
+        };
+      });
+      return out;
+    });
+  }
+
   window.PrettierAI = {
     analyze: analyze,
+    identifyProducts: identifyProducts,
     getKey: getKey,
     setKey: setKey,
     model: MODEL,

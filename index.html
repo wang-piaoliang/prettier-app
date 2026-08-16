@@ -62,7 +62,9 @@
       <section class="view active" id="view-timeline"></section>
       <section class="view" id="view-trend"></section>
       <section class="view" id="view-compose"></section>
+      <section class="view" id="view-products"></section>
       <section class="view" id="view-mainlines"></section>
+      <footer class="app-version" id="appVersion"></footer>
     </main>
 
     <nav class="tabbar">
@@ -75,6 +77,9 @@
       <button data-view="compose" type="button">
         <span class="glyph">＋</span>记一条
       </button>
+      <button data-view="products" type="button">
+        <span class="glyph">▤</span>产品
+      </button>
       <button data-view="mainlines" type="button">
         <span class="glyph">◉</span>主线
       </button>
@@ -83,6 +88,8 @@
 
   <!-- 选图：capture 不写死，这样相册和相机都能选 -->
   <input type="file" id="fileInput" accept="image/*" multiple hidden />
+  <!-- 拍产品：识别品牌和品名入库 -->
+  <input type="file" id="prodInput" accept="image/*" multiple hidden />
 
   <div id="lightbox" hidden>
     <button id="lbClose" type="button" aria-label="关闭">✕</button>
@@ -93,6 +100,7 @@
   </div>
   <div id="toast" hidden></div>
 
+  <script src="assets/version.js"></script>
   <script src="assets/photo.js"></script>
   <script src="assets/ai.js"></script>
   <script src="assets/store.js"></script>
