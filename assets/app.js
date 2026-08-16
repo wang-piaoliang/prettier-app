@@ -59,9 +59,19 @@
     var d = new Date(iso + 'T12:00:00');
     return isNaN(d) ? '' : '周' + '日一二三四五六'[d.getDay()];
   }
-  function todayISO() {
+  function todayISO() { return nowLocal().slice(0, 10); }
+
+  /* 本地时间，格式 YYYY-MM-DDTHH:MM —— 正好是 datetime-local 输入框要的格式。
+     不用 toISOString()：那个会转成 UTC，晚上 8 点会变成当天中午甚至前一天。 */
+  function nowLocal() {
     var d = new Date(), p = function (n) { return String(n).padStart(2, '0'); };
-    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+           'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function fmtTime(at) {
+    var m = String(at || '').match(/T(\d{2}:\d{2})/);
+    return m ? m[1] : '';
   }
   function slotFromHour(h) {
     if (h < 11) return 'morning';
@@ -83,6 +93,8 @@
   function pillLevel(v) { return v == null ? '' : v <= 2.4 ? 'watch' : v <= 3.6 ? 'ok' : 'good'; }
 
   function ascCompare(a, b) {
+    // 有完整时间就按时间排，没有的老记录退回按日期 + 时段
+    if (a.at && b.at && a.at !== b.at) return a.at < b.at ? -1 : 1;
     if (a.date !== b.date) return a.date < b.date ? -1 : 1;
     var sa = SLOT_ORDER.indexOf(a.slot), sb = SLOT_ORDER.indexOf(b.slot);
     if (sa !== sb) return sa - sb;
@@ -276,7 +288,7 @@
 
   var COVER_MAX = 2;   // 时间线上最多铺开几张，其余折叠
 
-  function entryHTML(e) {
+  function entryHTML(e, showTime) {
     var keys = (e.photos || []).slice();
     // AI 判断出的最佳那张顶到最前，没有就按原顺序
     var best = e.ai && typeof e.ai.best === 'number' ? e.ai.best : -1;
@@ -301,7 +313,7 @@
     var ov = overall(e);
     var pills = [];
     if (e.face) pills.push('<span class="pill">' + esc(FACE[e.face] || e.face) + '</span>');
-    if (e.slot) pills.push('<span class="pill">' + esc(SLOT[e.slot] || e.slot) + '</span>');
+    if (e.slot && !e.at) pills.push('<span class="pill">' + esc(SLOT[e.slot] || e.slot) + '</span>');
     if (ov != null) pills.push('<span class="pill ' + pillLevel(ov) + '">肤况 ' + ov.toFixed(1) + '</span>');
     if (e.makeup && typeof e.makeup.fit === 'number') {
       pills.push('<span class="pill ' + pillLevel(e.makeup.fit) + '">妆 ' + e.makeup.fit + '</span>');
@@ -316,8 +328,10 @@
 
     return '<article class="entry" data-id="' + esc(e.id) + '">' + photos +
       '<div class="entry-body">' +
-        '<div class="entry-head"><span class="entry-date">' + fmtDate(e.date) + '</span>' +
-        '<span class="tiny">' + esc(weekday(e.date)) + '</span>' +
+        '<div class="entry-head">' +
+        (fmtTime(e.at)
+          ? '<span class="entry-time">' + fmtTime(e.at) + '</span>'
+          : '<span class="entry-time">' + esc(SLOT[e.slot] || '') + '</span>') +
         '<div class="meta" style="margin-left:auto">' + pills.join('') + '</div></div>' +
         (e.light ? '<div class="tiny" style="margin-bottom:10px">' + esc(e.light) + '</div>' : '') +
         (tags ? '<div class="meta" style="margin-bottom:10px">' + tags + '</div>' : '') +
@@ -412,8 +426,31 @@
       host.innerHTML = '<div class="empty"><strong>还没有记录</strong>点下面的「记一条」开始。</div>';
       return;
     }
-    host.innerHTML = '<div class="section-title">时间线</div>' +
-      list.map(entryHTML).join('');
+
+    // 按天分组：同一天的多次拍摄归到一个区块里，块内按时间从早到晚
+    var days = [];
+    var index = {};
+    list.forEach(function (e) {
+      if (!index[e.date]) { index[e.date] = { date: e.date, rows: [] }; days.push(index[e.date]); }
+      index[e.date].rows.push(e);
+    });
+    days.forEach(function (d) { d.rows.sort(ascCompare); });
+
+    host.innerHTML = days.map(function (d) {
+      var n = d.rows.length;
+      var photos = d.rows.reduce(function (a, e) { return a + (e.photos || []).length; }, 0);
+      return '<section class="day">' +
+        '<div class="day-head">' +
+          '<span class="day-date">' + fmtDate(d.date) + '</span>' +
+          '<span class="day-week">' + esc(weekday(d.date)) + '</span>' +
+          '<span class="day-count">' +
+            (n > 1 ? n + ' 次 · ' : '') + photos + ' 张' +
+          '</span>' +
+        '</div>' +
+        d.rows.map(function (e) { return entryHTML(e, n > 1); }).join('') +
+      '</section>';
+    }).join('');
+
     hydratePhotos(host);
   }
 
@@ -526,8 +563,11 @@
 
     return {
       photos: [],
+      // 拍完就传，所以上传当下的时间就是记录时间。可以改。
+      at: nowLocal(),
       date: todayISO(),
       slot: slotFromHour(now.getHours()),
+      slotManual: false,
       face: 'makeup',
       kind: 'both',
       light: '',
@@ -562,9 +602,9 @@
       '</button>' +
       '<div id="aiOut"></div>' +
 
-      '<div class="field"><label>日期</label>' +
-        '<input type="date" id="fDate" value="' + esc(d.date) + '">' +
-        '<div class="tiny hint" id="dateHint"></div>' +
+      '<div class="field"><label>时间</label>' +
+        '<input type="datetime-local" id="fAt" value="' + esc(d.at) + '">' +
+        '<div class="tiny hint">默认是上传当下的时间，不对可以直接改。</div>' +
       '</div>' +
 
       '<div class="field"><label>时段</label>' +
@@ -658,7 +698,18 @@
       drawRates();
     });
 
-    $('#fDate', host).addEventListener('change', function () { d.date = this.value; });
+    $('#fAt', host).addEventListener('change', function () {
+      d.at = this.value || nowLocal();
+      d.date = d.at.slice(0, 10);
+      // 时段跟着时间走，除非你手动点过 —— 手动选择优先
+      if (!d.slotManual) {
+        var h = Number(d.at.slice(11, 13));
+        d.slot = slotFromHour(isNaN(h) ? 12 : h);
+        $$('#fSlot button', host).forEach(function (x) {
+          x.classList.toggle('on', x.dataset.v === d.slot);
+        });
+      }
+    });
     $('#fLight', host).addEventListener('input', function () { d.light = this.value; });
     $('#fNote', host).addEventListener('input', function () { d.note = this.value; });
     $('#fTags', host).addEventListener('input', function () {
@@ -678,6 +729,7 @@
       });
     };
     seg('#fSlot', 'slot');
+    $('#fSlot', host).addEventListener('click', function () { d.slotManual = true; });
     seg('#fFace', 'face');
 
     $('#lightPresets', host).addEventListener('click', function (ev) {
@@ -786,28 +838,22 @@
       return processImage(f).then(function (p) { d.photos.push(p); })
         .catch(function (err) { toast(err.message, true); });
     });
-    Promise.all(jobs).then(function () {
-      drawPicker();
-      // 第一张照片的拍摄时间自动填进日期，避免又记成"今天"
-      var first = d.photos[0];
-      if (first && first.takenAt) {
-        var iso = first.takenAt.slice(0, 10);
-        if (iso !== d.date) {
-          d.date = iso;
-          var inp = $('#fDate');
-          if (inp) inp.value = iso;
-          var hint = $('#dateHint');
-          if (hint) hint.textContent = '已按第一张照片的拍摄时间填好，不对可以改。';
-        }
-      }
-    });
+    // 时间用上传当下的，不从照片元数据里取 —— 拍完立刻传，当下时间更可靠，
+    // 而且相册里的 lastModified 可能是导入时间，不是拍摄时间。
+    Promise.all(jobs).then(drawPicker);
   }
 
   function makeEntryId(date) {
     var base = date.replace(/-/g, '');
-    var used = ((state.data && state.data.entries) || [])
-      .filter(function (e) { return e.date === date; }).length;
-    return base + '-' + String(used + 1).padStart(2, '0');
+    var existing = ((state.data && state.data.entries) || [])
+      .filter(function (e) { return e.date === date; })
+      .map(function (e) { return e.id; });
+    // 从 01 往上找第一个没被占的，避免删过记录后重新撞号
+    for (var n = 1; n < 100; n++) {
+      var id = base + '-' + String(n).padStart(2, '0');
+      if (existing.indexOf(id) < 0) return id;
+    }
+    return base + '-' + Date.now().toString(36);
   }
 
   function saveDraft() {
@@ -833,7 +879,7 @@
     });
 
     var entry = {
-      id: id, date: d.date, slot: d.slot, face: d.face, kind: d.kind,
+      id: id, date: d.date, at: d.at, slot: d.slot, face: d.face, kind: d.kind,
       light: d.light, scores: d.scores, tags: d.tags, note: d.note,
       photos: paths,
       products: d.products,

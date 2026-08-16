@@ -596,3 +596,28 @@ input:focus, textarea:focus, select:focus {
   margin: 22px 0 10px; font-family: var(--sans); font-size: 12px;
   letter-spacing: 2px; color: var(--accent-ink);
 }
+
+
+/* ---------- 按天分组 ---------- */
+.day { margin-bottom: 30px; }
+.day-head {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 0 2px 10px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+.day-date {
+  font-family: var(--sans); font-size: 15px; letter-spacing: 1.5px;
+  color: var(--accent-ink);
+}
+.day-week { color: var(--ink-faint); font-family: var(--sans); font-size: 12px; }
+.day-count {
+  margin-left: auto; color: var(--ink-faint);
+  font-family: var(--sans); font-size: 12px;
+}
+/* 同一天里的第二次及之后，缩进一点，看得出是同一天的连续记录 */
+.day .entry + .entry { margin-top: -4px; }
+.entry-time {
+  font-family: var(--sans); font-size: 14px; letter-spacing: 1px;
+  color: var(--ink-soft);
+}
