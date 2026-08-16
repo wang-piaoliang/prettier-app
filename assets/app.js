@@ -344,8 +344,8 @@
         makeupHTML(e.makeup) +
         (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
         '<div class="entry-act">' +
-          '<button data-edit="' + esc(e.id) + '">编辑</button>' +
-          '<button data-del="' + esc(e.id) + '">删除</button>' +
+          '<button data-edit="' + esc(e.id) + '" aria-label="编辑" title="编辑">✎</button>' +
+          '<button data-del="' + esc(e.id) + '" aria-label="删除" title="删除">🗑</button>' +
         '</div>' +
       '</div></article>';
   }
@@ -470,6 +470,15 @@
         '</section>';
       }).join('');
 
+    hydratePhotos(host);
+
+    if (!host.dataset.bound) {
+      host.dataset.bound = '1';
+      bindTimeline(host);
+    }
+  }
+
+  function bindTimeline(host) {
     host.addEventListener('click', function (ev) {
       var f = ev.target.closest('[data-fold]');
       if (f) {
@@ -483,8 +492,13 @@
       }
       if (ev.target.closest('#foldAll')) {
         allCollapsed = !allCollapsed;
-        days.forEach(function (d) { collapsedDays[d.date] = allCollapsed; });
-        renderTimeline();
+        $$('.day', host).forEach(function (sec) {
+          collapsedDays[sec.dataset.date] = allCollapsed;
+          sec.classList.toggle('closed', allCollapsed);
+          sec.querySelector('.day-body').hidden = allCollapsed;
+        });
+        $('#foldAll', host).textContent = allCollapsed ? '全部展开' : '全部折叠';
+        if (!allCollapsed) hydratePhotos(host);
         return;
       }
       var ed = ev.target.closest('[data-edit]');
@@ -492,8 +506,6 @@
       var dl = ev.target.closest('[data-del]');
       if (dl) return deleteEntry(dl.dataset.del);
     });
-
-    hydratePhotos(host);
   }
 
   function renderTrend() {
@@ -737,16 +749,6 @@
     $('#picker', host).addEventListener('click', function (ev) {
       if (ev.target.closest('#addPhoto')) { $('#fileInput').click(); return; }
 
-      var mv = ev.target.closest('[data-mv]');
-      if (mv) {
-        if (movePhoto(d.photos, Number(mv.dataset.mv), Number(mv.dataset.dir))) drawPicker();
-        return;
-      }
-      var kmv = ev.target.closest('[data-kmv]');
-      if (kmv) {
-        if (movePhoto(d.keepPhotos, Number(kmv.dataset.kmv), Number(kmv.dataset.dir))) drawPicker();
-        return;
-      }
       var kdel = ev.target.closest('[data-kdel]');
       if (kdel) {
         d.keepPhotos.splice(Number(kdel.dataset.kdel), 1);
@@ -902,26 +904,82 @@
     var keep = d.keepPhotos || [];
 
     // 已有照片（编辑时）在前，新加的在后；两段各自可以左右移动
+    // 长按拖拽排序，不放左右箭头按钮 —— 那些按钮又小又丑，
+    // 而且在手机上跟点击删除很容易误触
     var cells = keep.map(function (p, i) {
-      return '<div class="slot"><img data-key="' + esc(p) + '" alt="">' +
-        '<button class="del" data-kdel="' + i + '" aria-label="删除">×</button>' +
-        '<div class="mv">' +
-          '<button data-kmv="' + i + '" data-dir="-1" aria-label="左移">‹</button>' +
-          '<button data-kmv="' + i + '" data-dir="1" aria-label="右移">›</button>' +
-        '</div></div>';
+      return '<div class="slot" data-drag="k' + i + '">' +
+        '<img data-key="' + esc(p) + '" alt="">' +
+        '<button class="del" data-kdel="' + i + '" aria-label="删除">×</button></div>';
     }).concat(d.photos.map(function (p, i) {
-      return '<div class="slot new"><img src="' + p.preview + '" alt="">' +
+      return '<div class="slot new" data-drag="n' + i + '">' +
+        '<img src="' + p.preview + '" alt="">' +
         '<button class="del" data-i="' + i + '" aria-label="删除">×</button>' +
-        '<span class="badge">新</span>' +
-        '<div class="mv">' +
-          '<button data-mv="' + i + '" data-dir="-1" aria-label="左移">‹</button>' +
-          '<button data-mv="' + i + '" data-dir="1" aria-label="右移">›</button>' +
-        '</div></div>';
+        '<span class="badge">新</span></div>';
     }));
 
     host.innerHTML = cells.join('') +
-      '<button class="add" id="addPhoto"><span class="glyph">＋</span>加照片</button>';
+      '<button class="add" id="addPhoto"><span class="glyph">＋</span>加照片</button>' +
+      (cells.length > 1 ? '<div class="tiny hint drag-tip">长按照片可以拖动排序</div>' : '');
     hydratePhotos(host);
+    bindDrag(host);
+  }
+
+  /* 长按拖拽排序。
+     只在同一段内交换：已有照片和新加的照片分属两段，
+     跨段交换会让「哪些要上传、哪些已在云端」乱掉。 */
+  function bindDrag(host) {
+    var d = state.draft;
+    var timer = null, from = null, moved = false;
+
+    function keyOf(node) { return node && node.dataset ? node.dataset.drag : null; }
+    function listOf(k) { return k && k[0] === 'k' ? d.keepPhotos : d.photos; }
+
+    function end() {
+      clearTimeout(timer);
+      timer = null;
+      if (from) {
+        var el2 = host.querySelector('[data-drag="' + from + '"]');
+        if (el2) el2.classList.remove('dragging');
+      }
+      from = null;
+      moved = false;
+      host.classList.remove('dragmode');
+    }
+
+    host.addEventListener('touchstart', function (ev) {
+      var slot = ev.target.closest('.slot');
+      if (!slot || ev.target.closest('.del')) return;
+      timer = setTimeout(function () {
+        from = keyOf(slot);
+        slot.classList.add('dragging');
+        host.classList.add('dragmode');
+        if (navigator.vibrate) navigator.vibrate(12);   // 给一点「进入拖拽」的反馈
+      }, 420);
+    }, { passive: true });
+
+    host.addEventListener('touchmove', function (ev) {
+      if (!from) { clearTimeout(timer); return; }   // 还没进拖拽就滑动＝想滚页面
+      ev.preventDefault();
+      moved = true;
+      var t = ev.touches[0];
+      var over = document.elementFromPoint(t.clientX, t.clientY);
+      var slot = over && over.closest ? over.closest('.slot') : null;
+      var to = keyOf(slot);
+      if (!to || to === from) return;
+      if (to[0] !== from[0]) return;                // 不跨段
+
+      var list = listOf(from);
+      var i = Number(from.slice(1)), j = Number(to.slice(1));
+      var t2 = list[i]; list[i] = list[j]; list[j] = t2;
+      from = to;
+      drawPicker();
+      var el3 = host.querySelector('[data-drag="' + from + '"]');
+      if (el3) el3.classList.add('dragging');
+      host.classList.add('dragmode');
+    }, { passive: false });
+
+    host.addEventListener('touchend', end, { passive: true });
+    host.addEventListener('touchcancel', end, { passive: true });
   }
 
   function movePhoto(list, i, dir) {
@@ -1069,7 +1127,10 @@
   function saveDraft() {
     var d = state.draft;
     if (!d.date) return toast('先选时间', true);
-    if (!d.photos.length && !d.note) return toast('至少加一张照片或写点备注', true);
+    var hasPhoto = d.photos.length || (d.keepPhotos && d.keepPhotos.length);
+    if (!d.editingId && !hasPhoto && !d.note) {
+      return toast('至少加一张照片或写点备注', true);
+    }
 
     var id = d.editingId || makeEntryId(d.date);
     var files = [];

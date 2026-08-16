@@ -649,15 +649,6 @@ input:focus, textarea:focus, select:focus {
 #moreBox { padding-top: 16px; }
 
 /* ---------- 照片排序 ---------- */
-.picker .slot .mv {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  display: flex; justify-content: space-between;
-  background: linear-gradient(transparent, rgba(26,22,19,.55));
-}
-.picker .slot .mv button {
-  flex: 1; border: none; background: none; color: #fff;
-  font-size: 17px; line-height: 1; padding: 6px 0; cursor: pointer;
-}
 .picker .slot .badge {
   position: absolute; top: 5px; left: 5px;
   padding: 1px 7px; border-radius: 10px;
@@ -666,15 +657,18 @@ input:focus, textarea:focus, select:focus {
 }
 
 /* ---------- 记录操作 ---------- */
+/* 编辑/删除：小图标，贴在卡片右下，平时几乎看不见 */
 .entry-act {
-  display: flex; gap: 14px; justify-content: flex-end;
-  margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--line);
+  display: flex; gap: 2px; justify-content: flex-end;
+  margin-top: 8px;
 }
 .entry-act button {
+  width: 30px; height: 30px; padding: 0;
   border: none; background: none; cursor: pointer;
-  color: var(--ink-faint); font-family: var(--sans); font-size: 12px;
+  color: var(--ink-faint); font-size: 14px; line-height: 1;
+  border-radius: 8px; opacity: .5;
 }
-.entry-act button[data-del] { color: var(--focus); }
+.entry-act button:active { background: var(--card-2); opacity: 1; }
 
 /* ---------- 上传队列 ---------- */
 #queue {
@@ -732,3 +726,15 @@ input:focus, textarea:focus, select:focus {
   font-weight: 500; font-size: 12px; letter-spacing: 1px; color: var(--accent-ink);
 }
 .kv-line span { color: var(--ink-soft); word-break: break-all; }
+
+
+/* ---------- 长按拖拽排序 ---------- */
+.picker .slot { transition: transform .14s ease, opacity .14s ease; }
+.picker.dragmode { touch-action: none; }
+.picker.dragmode .slot:not(.dragging) { opacity: .55; }
+.picker .slot.dragging {
+  transform: scale(1.06);
+  box-shadow: 0 10px 24px rgba(26, 22, 19, .3);
+  z-index: 2;
+}
+.drag-tip { grid-column: 1 / -1; text-align: center; margin-top: 2px; }

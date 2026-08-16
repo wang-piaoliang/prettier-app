@@ -28,7 +28,7 @@
   var QWEN_ENDPOINT = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
   var QWEN_MODEL = 'qwen3-vl-plus';
   // 从新到旧试，成功的那个记下来，下次先用它，省得每次都撞一遍 404
-  var GEMINI_MODELS = ['gemini-flash-latest', 'gemini-3.6-flash', 'gemini-2.5-flash'];
+  var GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
 
   var LS_PROVIDER = 'prettier.ai.provider';
   var LS_KEY_QWEN = 'prettier.ai.key';          // 沿用旧键，已填过的不用重填
@@ -125,9 +125,12 @@
             });
           }
           return res.json().then(function (d) {
-            var t = d && d.candidates && d.candidates[0] &&
-                    d.candidates[0].content && d.candidates[0].content.parts &&
-                    d.candidates[0].content.parts[0] && d.candidates[0].content.parts[0].text;
+            /* 必须把所有 part 拼起来，不能只取 parts[0]。
+               带思考的模型会先返回一个没有 text 的 part，
+               只看第一个就会误判成「没有返回内容」—— 踩过这个坑。 */
+            var parts = (d && d.candidates && d.candidates[0] &&
+                         d.candidates[0].content && d.candidates[0].content.parts) || [];
+            var t = parts.map(function (x) { return x.text || ''; }).join('');
             if (!t) throw new Error('模型没有返回内容');
             lsSet(LS_GEMINI_MODEL, model);   // 记住能用的那个
             return t;
