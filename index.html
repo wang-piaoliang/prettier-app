@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>prettier</title>
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#faf7f4" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="prettier" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="assets/app.css" />
+</head>
+<body>
+
+  <!-- 口令页 -->
+  <section class="gate" id="gate" hidden>
+    <div class="logo">
+      <img src="icons/icon-192.png" alt="" />
+      <h2>prettier</h2>
+      <p class="muted" style="text-align:center;margin:0">皮肤与妆容的长期观察</p>
+    </div>
+    <form id="gateForm">
+      <div class="field">
+        <label>数据仓库</label>
+        <input type="text" id="gateRepo" autocapitalize="off" autocorrect="off" spellcheck="false"
+               placeholder="用户名/仓库名" />
+      </div>
+      <div class="field">
+        <label>GitHub 令牌</label>
+        <input type="password" id="gateToken" autocomplete="current-password"
+               autocapitalize="off" autocorrect="off" spellcheck="false"
+               placeholder="github_pat_..." />
+        <div class="tiny hint">
+          在 <b>Settings → Developer settings → Personal access tokens →
+          Fine-grained tokens</b> 生成，只勾这一个仓库、权限给
+          <b>Contents: Read and write</b>。
+        </div>
+      </div>
+      <button class="btn" id="gateBtn" type="submit">进入</button>
+    </form>
+    <p class="tiny" style="margin-top:22px;text-align:center">
+      照片和记录都存在你自己的 GitHub 私有仓库里，这个页面本身不含任何数据。<br />
+      令牌只存在这台设备上，不会发给第三方。
+    </p>
+  </section>
+
+  <!-- 应用 -->
+  <div id="app" hidden>
+    <header class="appbar">
+      <span class="syncdot" id="syncDot"></span>
+      <h1>prettier</h1>
+      <span class="spacer"></span>
+      <button class="iconbtn" id="refreshBtn" type="button">刷新</button>
+      <button class="iconbtn" id="themeBtn" type="button">浅色</button>
+    </header>
+
+    <main>
+      <section class="view active" id="view-timeline"></section>
+      <section class="view" id="view-trend"></section>
+      <section class="view" id="view-compose"></section>
+      <section class="view" id="view-mainlines"></section>
+    </main>
+
+    <nav class="tabbar">
+      <button data-view="timeline" class="active" type="button">
+        <span class="glyph">◷</span>时间线
+      </button>
+      <button data-view="trend" type="button">
+        <span class="glyph">◠</span>趋势
+      </button>
+      <button data-view="compose" type="button">
+        <span class="glyph">＋</span>记一条
+      </button>
+      <button data-view="mainlines" type="button">
+        <span class="glyph">◉</span>主线
+      </button>
+    </nav>
+  </div>
+
+  <!-- 选图：capture 不写死，这样相册和相机都能选 -->
+  <input type="file" id="fileInput" accept="image/*" multiple hidden />
+
+  <div id="lightbox" hidden><img alt="" /></div>
+  <div id="toast" hidden></div>
+
+  <script src="assets/photo.js"></script>
+  <script src="assets/store.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
