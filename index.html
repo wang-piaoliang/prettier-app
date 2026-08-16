@@ -56,6 +56,7 @@
       <span class="spacer"></span>
       <button class="iconbtn" id="refreshBtn" type="button">刷新</button>
       <button class="iconbtn" id="themeBtn" type="button">浅色</button>
+      <button class="iconbtn" id="settingsBtn" type="button" aria-label="设置">⚙</button>
     </header>
 
     <main>
@@ -64,6 +65,7 @@
       <section class="view" id="view-compose"></section>
       <section class="view" id="view-products"></section>
       <section class="view" id="view-mainlines"></section>
+      <section class="view" id="view-settings"></section>
       <footer class="app-version" id="appVersion"></footer>
     </main>
 
@@ -98,6 +100,7 @@
     <button id="lbNext" type="button" aria-label="下一张">›</button>
     <div id="lbCount"></div>
   </div>
+  <div id="queue" hidden></div>
   <div id="toast" hidden></div>
 
   <script src="assets/version.js"></script>

@@ -28,7 +28,18 @@
 
   /* ---------- 基础请求 ---------- */
 
-  function req(pathname, opts) {
+  /* 手机网络会抖，一次失败不代表真失败。
+     只重试网络层错误和 5xx —— 401/403/404 重试多少次都一样。 */
+  function req(pathname, opts, tries) {
+    tries = tries == null ? 2 : tries;
+    return req1(pathname, opts).catch(function (err) {
+      if (tries <= 0 || err.noRetry) throw err;
+      return new Promise(function (r) { setTimeout(r, 900); })
+        .then(function () { return req(pathname, opts, tries - 1); });
+    });
+  }
+
+  function req1(pathname, opts) {
     opts = opts || {};
     var headers = {
       Accept: 'application/vnd.github+json',
@@ -42,17 +53,21 @@
       headers: headers,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     }).then(function (res) {
-      if (res.status === 401) throw new Error('令牌无效或已过期');
+      if (res.status === 401) { var e401 = new Error('令牌无效或已过期'); e401.noRetry = true; throw e401; }
       if (res.status === 403) {
         return res.text().then(function (t) {
-          if (/rate limit/i.test(t)) throw new Error('GitHub 限流了，等几分钟再试');
-          throw new Error('令牌权限不足 —— 需要这个仓库的 Contents: Read and write');
+          var e = new Error(/rate limit/i.test(t)
+            ? 'GitHub 限流了，等几分钟再试'
+            : '令牌权限不足 —— 需要这个仓库的 Contents: Read and write');
+          e.noRetry = true;
+          throw e;
         });
       }
       if (res.status === 404) {
-        var e = new Error('找不到：' + pathname);
-        e.notFound = true;
-        throw e;
+        var e404 = new Error('找不到：' + pathname);
+        e404.notFound = true;
+        e404.noRetry = true;
+        throw e404;
       }
       if (!res.ok) {
         return res.text().then(function (t) {
@@ -141,19 +156,23 @@
     step('读取分支');
     return head().then(function (sha) {
       baseSha = sha;
-      step('上传文件（' + files.length + '）');
-      // 每个文件先单独建 blob，再一起挂进 tree
-      return Promise.all(files.map(function (f) {
-        var enc = f.blob
-          ? blobToB64(f.blob).then(function (c) { return { content: c, encoding: 'base64' }; })
-          : Promise.resolve({ content: f.text, encoding: 'utf-8' });
-        return enc.then(function (body) {
-          return req(repoPath('/git/blobs'), { method: 'POST', body: body })
-            .then(function (r) {
-              return { path: f.path, mode: '100644', type: 'blob', sha: r.sha };
-            });
+      /* 一张一张传，不用 Promise.all。
+         手机上行带宽有限，6 张照片同时发 6 个几百 KB 的请求很容易一起超时，
+         而且失败时分不清是哪张出的问题。串行慢一点，但稳得多、能报进度。 */
+      var items = [];
+      return files.reduce(function (chain, f, i) {
+        return chain.then(function () {
+          step('上传 ' + (i + 1) + '/' + files.length);
+          var enc = f.blob
+            ? blobToB64(f.blob).then(function (c) { return { content: c, encoding: 'base64' }; })
+            : Promise.resolve({ content: f.text, encoding: 'utf-8' });
+          return enc.then(function (body) {
+            return req(repoPath('/git/blobs'), { method: 'POST', body: body });
+          }).then(function (r) {
+            items.push({ path: f.path, mode: '100644', type: 'blob', sha: r.sha });
+          });
         });
-      }));
+      }, Promise.resolve()).then(function () { return items; });
     }).then(function (treeItems) {
       step('组织目录');
       return req(repoPath('/git/trees'), {

@@ -47,9 +47,9 @@
   function get(k, d) { try { return localStorage.getItem(k) || d; } catch (e) { return d; } }
   function set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 
-  var SLOT = { morning: '早', midday: '中午', evening: '傍晚', night: '夜间' };
+  var SLOT = { morning: '上午', afternoon: '下午', night: '晚上' };
   var FACE = { bare: '素颜', makeup: '带妆' };
-  var SLOT_ORDER = ['morning', 'midday', 'evening', 'night'];
+  var SLOT_ORDER = ['morning', 'afternoon', 'night'];
 
   function fmtDate(iso) {
     var p = String(iso || '').split('-');
@@ -73,11 +73,15 @@
     var m = String(at || '').match(/T(\d{2}:\d{2})/);
     return m ? m[1] : '';
   }
+  // 完全由时间决定，不再让用户单独选 —— 时间已经填了，时段是它的派生
   function slotFromHour(h) {
-    if (h < 11) return 'morning';
-    if (h < 15) return 'midday';
-    if (h < 19) return 'evening';
+    if (h < 12) return 'morning';
+    if (h < 18) return 'afternoon';
     return 'night';
+  }
+  function slotOf(e) {
+    var h = Number(String(e.at || '').slice(11, 13));
+    return isNaN(h) ? (e.slot || '') : slotFromHour(h);
   }
 
   function dims() { return (state.data && state.data.dimensions) || []; }
@@ -96,7 +100,7 @@
     // 有完整时间就按时间排，没有的老记录退回按日期 + 时段
     if (a.at && b.at && a.at !== b.at) return a.at < b.at ? -1 : 1;
     if (a.date !== b.date) return a.date < b.date ? -1 : 1;
-    var sa = SLOT_ORDER.indexOf(a.slot), sb = SLOT_ORDER.indexOf(b.slot);
+    var sa = SLOT_ORDER.indexOf(slotOf(a)), sb = SLOT_ORDER.indexOf(slotOf(b));
     if (sa !== sb) return sa - sb;
     return String(a.id) < String(b.id) ? -1 : 1;
   }
@@ -313,7 +317,8 @@
     var ov = overall(e);
     var pills = [];
     if (e.face) pills.push('<span class="pill">' + esc(FACE[e.face] || e.face) + '</span>');
-    if (e.slot) pills.push('<span class="pill">' + esc(SLOT[e.slot] || e.slot) + '</span>');
+    var sl = slotOf(e);
+    if (sl) pills.push('<span class="pill">' + esc(SLOT[sl] || sl) + '</span>');
     if (ov != null) pills.push('<span class="pill ' + pillLevel(ov) + '">肤况 ' + ov.toFixed(1) + '</span>');
     if (e.makeup && typeof e.makeup.fit === 'number') {
       pills.push('<span class="pill ' + pillLevel(e.makeup.fit) + '">妆 ' + e.makeup.fit + '</span>');
@@ -338,6 +343,10 @@
         zonesHTML(e.zones) +
         makeupHTML(e.makeup) +
         (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
+        '<div class="entry-act">' +
+          '<button data-edit="' + esc(e.id) + '">编辑</button>' +
+          '<button data-del="' + esc(e.id) + '">删除</button>' +
+        '</div>' +
       '</div></article>';
   }
 
@@ -352,9 +361,10 @@
   }
 
   function makeupHTML(m) {
-    if (!m || (!m.verdict && !m.issues && typeof m.lasting !== 'number')) return '';
+    if (!m || (!m.verdict && !m.issues && !m.state && typeof m.lasting !== 'number')) return '';
     var bits = [];
     if (typeof m.lasting === 'number') bits.push('持妆 ' + m.lasting + '/5');
+    if (m.state && m.state.length) bits.push(m.state.join('、'));
     if (m.issues && m.issues.length) bits.push(m.issues.join('；'));
     return '<div class="note">' +
       (bits.length ? '<b>妆容</b>　' + esc(bits.join('　·　')) + (m.verdict ? '<br>' : '') : '') +
@@ -417,6 +427,9 @@
 
   /* ================= 视图 ================= */
 
+  var collapsedDays = {};      // date -> true 表示收起
+  var allCollapsed = false;
+
   function renderTimeline() {
     var host = $('#view-timeline');
     var list = newestFirst((state.data && state.data.entries) || []);
@@ -425,29 +438,60 @@
       return;
     }
 
-    // 按天分组：同一天的多次拍摄归到一个区块里，块内按时间从早到晚
-    var days = [];
-    var index = {};
+    // 按天分组：同一天的多次拍摄归到一个区块，块内按时间从早到晚
+    var days = [], index = {};
     list.forEach(function (e) {
       if (!index[e.date]) { index[e.date] = { date: e.date, rows: [] }; days.push(index[e.date]); }
       index[e.date].rows.push(e);
     });
     days.forEach(function (d) { d.rows.sort(ascCompare); });
 
-    host.innerHTML = days.map(function (d) {
-      var n = d.rows.length;
-      var photos = d.rows.reduce(function (a, e) { return a + (e.photos || []).length; }, 0);
-      return '<section class="day">' +
-        '<div class="day-head">' +
-          '<span class="day-date">' + fmtDate(d.date) + '</span>' +
-          '<span class="day-week">' + esc(weekday(d.date)) + '</span>' +
-          '<span class="day-count">' +
-            (n > 1 ? n + ' 次 · ' : '') + photos + ' 张' +
-          '</span>' +
-        '</div>' +
-        d.rows.map(function (e) { return entryHTML(e, n > 1); }).join('') +
-      '</section>';
-    }).join('');
+    host.innerHTML =
+      '<div class="tl-bar">' +
+        '<span class="tiny">' + days.length + ' 天 · ' + list.length + ' 条</span>' +
+        '<button id="foldAll" type="button">' +
+          (allCollapsed ? '全部展开' : '全部折叠') +
+        '</button>' +
+      '</div>' +
+      days.map(function (d) {
+        var closed = collapsedDays[d.date];
+        var n = d.rows.length;
+        var photos = d.rows.reduce(function (a, e) { return a + (e.photos || []).length; }, 0);
+        return '<section class="day' + (closed ? ' closed' : '') + '" data-date="' + esc(d.date) + '">' +
+          '<button class="day-head" type="button" data-fold="' + esc(d.date) + '">' +
+            '<span class="day-date">' + fmtDate(d.date) + '</span>' +
+            '<span class="day-week">' + esc(weekday(d.date)) + '</span>' +
+            '<span class="day-count">' + (n > 1 ? n + ' 次 · ' : '') + photos + ' 张</span>' +
+            '<span class="ml-caret">▾</span>' +
+          '</button>' +
+          '<div class="day-body"' + (closed ? ' hidden' : '') + '>' +
+            d.rows.map(function (e) { return entryHTML(e); }).join('') +
+          '</div>' +
+        '</section>';
+      }).join('');
+
+    host.addEventListener('click', function (ev) {
+      var f = ev.target.closest('[data-fold]');
+      if (f) {
+        var date = f.dataset.fold;
+        collapsedDays[date] = !collapsedDays[date];
+        var sec = f.closest('.day');
+        sec.classList.toggle('closed', collapsedDays[date]);
+        sec.querySelector('.day-body').hidden = collapsedDays[date];
+        if (!collapsedDays[date]) hydratePhotos(sec);
+        return;
+      }
+      if (ev.target.closest('#foldAll')) {
+        allCollapsed = !allCollapsed;
+        days.forEach(function (d) { collapsedDays[d.date] = allCollapsed; });
+        renderTimeline();
+        return;
+      }
+      var ed = ev.target.closest('[data-edit]');
+      if (ed) return editEntry(ed.dataset.edit);
+      var dl = ev.target.closest('[data-del]');
+      if (dl) return deleteEntry(dl.dataset.del);
+    });
 
     hydratePhotos(host);
   }
@@ -579,6 +623,10 @@
     };
   }
 
+  /* 带妆时的持妆状态。AI 会自动勾，不准直接点掉 —— 这些是判断
+     「这个底妆到底扛不扛得住」最直接的证据，比分数更具体。 */
+  var MAKEUP_STATES = ['泛油光', '斑驳', '卡粉', '脱妆', '暗沉', '干纹', '完好'];
+
   var LIGHT_PRESETS = ['窗边自然光', '室内暖光', '室内白光', '近距离侧光', '均匀正面光', '室外'];
 
   function renderCompose() {
@@ -587,91 +635,126 @@
     var d = state.draft;
 
     host.innerHTML =
-      '<div class="section-title">记一条</div>' +
+      '<div class="section-title">' + (d.editingId ? '编辑记录' : '记一条') + '</div>' +
 
+      /* 常用的三样放最上面：照片、时间、备注，填完就能存。
+         其余大部分时候不填，收进下面的折叠区。 */
       '<div class="field"><label>照片</label>' +
         '<div class="picker" id="picker"></div>' +
-        '<div class="tiny hint">会自动压到长边 1600px、压平 iPhone 的 HDR 再上传。' +
-        '同一次观察的多张放一条里。</div>' +
       '</div>' +
 
-      '<button class="btn ghost" id="aiBtn" type="button" style="margin-bottom:20px">' +
+      '<div class="field"><label>时间</label>' +
+        '<input type="datetime-local" id="fAt" value="' + esc(d.at) + '">' +
+        '<div class="tiny hint" id="slotHint"></div>' +
+      '</div>' +
+
+      '<div class="field"><label>备注</label>' +
+        '<textarea id="fNote" placeholder="看到什么写什么，可留空">' + esc(d.note) + '</textarea>' +
+      '</div>' +
+
+      '<button class="btn" id="saveBtn">' + (d.editingId ? '保存修改' : '保存') + '</button>' +
+
+      '<button class="btn ghost" id="aiBtn" type="button" style="margin-top:10px">' +
         '让 AI 看照片打分' +
       '</button>' +
       '<div id="aiOut"></div>' +
 
-      '<div class="field"><label>时间</label>' +
-        '<input type="datetime-local" id="fAt" value="' + esc(d.at) + '">' +
-        '<div class="tiny hint">默认是上传当下的时间，不对可以直接改。</div>' +
-      '</div>' +
+      /* ---- 以下折叠 ---- */
+      '<button class="more-toggle" id="moreToggle" type="button" aria-expanded="false">' +
+        '更多（素颜/带妆、光线、评分、产品、标签）<span class="ml-caret">▾</span>' +
+      '</button>' +
+      '<div id="moreBox" hidden>' +
 
-      '<div class="field"><label>时段</label>' +
-        '<div class="segmented" id="fSlot">' +
-        SLOT_ORDER.map(function (x) {
-          return '<button data-v="' + x + '"' + (d.slot === x ? ' class="on"' : '') + '>' +
-            SLOT[x] + '</button>';
-        }).join('') + '</div></div>' +
-
-      '<div class="field"><label>素颜还是带妆</label>' +
-        '<div class="segmented" id="fFace">' +
-        ['bare', 'makeup'].map(function (x) {
-          return '<button data-v="' + x + '"' + (d.face === x ? ' class="on"' : '') + '>' +
-            FACE[x] + '</button>';
-        }).join('') + '</div>' +
-        '<div class="tiny hint">带妆照判读不了色斑，只有素颜照能进纵向对比。</div>' +
-      '</div>' +
-
-      '<div class="field"><label>光线条件</label>' +
-        '<input type="text" id="fLight" placeholder="比如：窗边自然光" value="' + esc(d.light) + '">' +
-        '<div class="segmented" id="lightPresets" style="margin-top:8px">' +
-        LIGHT_PRESETS.map(function (p) {
-          return '<button data-v="' + esc(p) + '" style="flex:0 1 auto;font-size:12px;min-height:36px">' +
-            esc(p) + '</button>';
-        }).join('') + '</div>' +
-      '</div>' +
-
-      '<div class="field"><label>今天用的产品' +
-        (d.carriedFrom ? '（沿用 ' + fmtDate(d.carriedFrom) + '，改动直接编辑）' : '') +
-        '</label>' +
-        '<div class="prod-edit">' +
-          '<div class="prow"><b>护肤</b>' +
-            '<input type="text" id="fSkincare" placeholder="用顿号或逗号分隔" value="' +
-            esc((d.products.skincare || []).join('、')) + '"></div>' +
-          '<div class="prow"><b>彩妆</b>' +
-            '<input type="text" id="fMakeup" placeholder="用顿号或逗号分隔" value="' +
-            esc((d.products.makeup || []).join('、')) + '"></div>' +
+        '<div class="field"><label>素颜还是带妆</label>' +
+          '<div class="segmented" id="fFace">' +
+          ['bare', 'makeup'].map(function (x) {
+            return '<button data-v="' + x + '"' + (d.face === x ? ' class="on"' : '') + '>' +
+              FACE[x] + '</button>';
+          }).join('') + '</div>' +
         '</div>' +
+
+        '<div class="field"><label>光线条件</label>' +
+          '<input type="text" id="fLight" placeholder="比如：窗边自然光" value="' + esc(d.light) + '">' +
+          '<div class="segmented" id="lightPresets" style="margin-top:8px">' +
+          LIGHT_PRESETS.map(function (p) {
+            return '<button data-v="' + esc(p) + '" style="flex:0 1 auto;font-size:12px;min-height:36px">' +
+              esc(p) + '</button>';
+          }).join('') + '</div>' +
+          '<div class="tiny hint">填了这个，AI 判读会准很多。</div>' +
+        '</div>' +
+
+        '<div class="field"><label>肤况评分（看不清就留空）</label>' +
+          '<div class="card" id="fScores"></div>' +
+        '</div>' +
+
+        (d.face === 'makeup'
+          ? '<div class="field"><label>妆容</label>' +
+              '<div class="card" id="fMakeupScores"></div>' +
+              '<div class="tiny hint" style="margin:10px 0 8px">持妆状态（AI 会自动勾，不准就点掉）</div>' +
+              '<div class="segmented" id="fMakeupState">' +
+              MAKEUP_STATES.map(function (x) {
+                var on = (d.makeupState || []).indexOf(x) >= 0;
+                return '<button data-v="' + esc(x) + '"' + (on ? ' class="on"' : '') +
+                  ' style="flex:0 1 auto;font-size:12px;min-height:36px">' + esc(x) + '</button>';
+              }).join('') +
+              '</div>' +
+            '</div>'
+          : '') +
+
+        '<div class="field"><label>今天用的产品' +
+          (d.carriedFrom ? '（沿用 ' + fmtDate(d.carriedFrom) + '）' : '') + '</label>' +
+          '<div class="prod-edit">' +
+            '<div class="prow"><b>护肤</b>' +
+              '<input type="text" id="fSkincare" placeholder="顿号分隔" value="' +
+              esc((d.products.skincare || []).join('、')) + '"></div>' +
+            '<div class="prow"><b>彩妆</b>' +
+              '<input type="text" id="fMakeupProd" placeholder="顿号分隔" value="' +
+              esc((d.products.makeup || []).join('、')) + '"></div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="field"><label>标签</label>' +
+          '<input type="text" id="fTags" value="' + esc((d.tags || []).join(' ')) + '">' +
+        '</div>' +
+
       '</div>' +
 
-      '<div class="field"><label>肤况评分（看不清就留空）</label>' +
-        '<div class="card" id="fScores"></div>' +
-      '</div>' +
-
-      '<div class="field"><label>妆容</label>' +
-        '<div class="card" id="fMakeupScores"></div>' +
-      '</div>' +
-
-      '<div class="field"><label>备注</label>' +
-        '<textarea id="fNote" placeholder="看到什么写什么">' + esc(d.note) + '</textarea>' +
-      '</div>' +
-
-      '<div class="field"><label>标签（空格或逗号分隔）</label>' +
-        '<input type="text" id="fTags" value="' + esc((d.tags || []).join(' ')) + '">' +
-      '</div>' +
-
-      '<div id="saveProgress" hidden><div class="progress"><i></i></div>' +
-      '<div class="tiny" style="text-align:center;margin-top:6px" id="saveMsg"></div></div>' +
-
-      '<button class="btn" id="saveBtn">保存</button>' +
-      '<button class="btn ghost" id="resetBtn">清空重来</button>';
+      '<button class="btn ghost" id="resetBtn" style="margin-top:18px">' +
+        (d.editingId ? '取消编辑' : '清空重来') + '</button>';
 
     drawPicker();
     drawRates();
+    updateSlotHint();
+
+    $('#moreToggle', host).addEventListener('click', function () {
+      var box = $('#moreBox', host);
+      var open = !box.hidden;
+      box.hidden = open;
+      this.setAttribute('aria-expanded', String(!open));
+      this.classList.toggle('open', !open);
+    });
 
     $('#picker', host).addEventListener('click', function (ev) {
       if (ev.target.closest('#addPhoto')) { $('#fileInput').click(); return; }
+
+      var mv = ev.target.closest('[data-mv]');
+      if (mv) {
+        if (movePhoto(d.photos, Number(mv.dataset.mv), Number(mv.dataset.dir))) drawPicker();
+        return;
+      }
+      var kmv = ev.target.closest('[data-kmv]');
+      if (kmv) {
+        if (movePhoto(d.keepPhotos, Number(kmv.dataset.kmv), Number(kmv.dataset.dir))) drawPicker();
+        return;
+      }
+      var kdel = ev.target.closest('[data-kdel]');
+      if (kdel) {
+        d.keepPhotos.splice(Number(kdel.dataset.kdel), 1);
+        drawPicker();
+        return;
+      }
       var b = ev.target.closest('.del');
-      if (!b) return;
+      if (!b || b.dataset.i === undefined) return;
       var i = Number(b.dataset.i);
       URL.revokeObjectURL(d.photos[i].preview);
       d.photos.splice(i, 1);
@@ -687,7 +770,18 @@
       drawRates();
     });
 
-    $('#fMakeupScores', host).addEventListener('click', function (ev) {
+    var ms = $('#fMakeupState', host);
+    if (ms) ms.addEventListener('click', function (ev) {
+      var b = ev.target.closest('button');
+      if (!b) return;
+      d.makeupState = d.makeupState || [];
+      var at = d.makeupState.indexOf(b.dataset.v);
+      if (at >= 0) d.makeupState.splice(at, 1); else d.makeupState.push(b.dataset.v);
+      b.classList.toggle('on');
+    });
+
+    var fms = $('#fMakeupScores', host);
+    if (fms) fms.addEventListener('click', function (ev) {
       var c = ev.target.closest('[data-clear]');
       if (c) { delete d.makeupScores[c.dataset.clear]; drawRates(); return; }
       var b = ev.target.closest('[data-k]');
@@ -699,14 +793,9 @@
     $('#fAt', host).addEventListener('change', function () {
       d.at = this.value || nowLocal();
       d.date = d.at.slice(0, 10);
-      // 时段跟着时间走，除非你手动点过 —— 手动选择优先
-      if (!d.slotManual) {
-        var h = Number(d.at.slice(11, 13));
-        d.slot = slotFromHour(isNaN(h) ? 12 : h);
-        $$('#fSlot button', host).forEach(function (x) {
-          x.classList.toggle('on', x.dataset.v === d.slot);
-        });
-      }
+      var h = Number(d.at.slice(11, 13));
+      d.slot = slotFromHour(isNaN(h) ? 12 : h);
+      updateSlotHint();
     });
     $('#fLight', host).addEventListener('input', function () { d.light = this.value; });
     $('#fNote', host).addEventListener('input', function () { d.note = this.value; });
@@ -715,20 +804,21 @@
     });
     var splitList = function (v) { return v.split(/[,，、]+/).map(function (x) { return x.trim(); }).filter(Boolean); };
     $('#fSkincare', host).addEventListener('input', function () { d.products.skincare = splitList(this.value); });
-    $('#fMakeup', host).addEventListener('input', function () { d.products.makeup = splitList(this.value); });
+    $('#fMakeupProd', host).addEventListener('input', function () { d.products.makeup = splitList(this.value); });
 
-    var seg = function (sel, key) {
-      $(sel, host).addEventListener('click', function (ev) {
+    var seg = function (sel, key, redraw) {
+      var node = $(sel, host);
+      if (!node) return;
+      node.addEventListener('click', function (ev) {
         var b = ev.target.closest('button');
         if (!b) return;
         d[key] = b.dataset.v;
+        if (redraw) { renderCompose(); $('#moreToggle').click(); return; }
         $$(sel + ' button', host).forEach(function (x) { x.classList.remove('on'); });
         b.classList.add('on');
       });
     };
-    seg('#fSlot', 'slot');
-    $('#fSlot', host).addEventListener('click', function () { d.slotManual = true; });
-    seg('#fFace', 'face');
+    seg('#fFace', 'face', true);
 
     $('#lightPresets', host).addEventListener('click', function (ev) {
       var b = ev.target.closest('button');
@@ -744,6 +834,14 @@
       state.draft = blankDraft();
       renderCompose();
     });
+  }
+
+  function updateSlotHint() {
+    var el2 = $('#slotHint');
+    if (!el2) return;
+    var d = state.draft;
+    el2.textContent = '默认是上传当下的时间，可以改。当前归类为「' +
+      (SLOT[d.slot] || '') + '」。';
   }
 
   /* ---- AI 判读 ---- */
@@ -776,6 +874,9 @@
       Object.assign(d.scores, r.scores || {});
       Object.assign(d.makeupScores, r.makeup || {});
       if (r.tags && r.tags.length) d.tags = r.tags;
+      if (r.makeupState && r.makeupState.length) {
+        d.makeupState = r.makeupState.filter(function (x) { return MAKEUP_STATES.indexOf(x) >= 0; });
+      }
       if (r.summary && !d.note) d.note = r.summary;
 
       renderCompose();
@@ -798,13 +899,36 @@
     var host = $('#picker');
     if (!host) return;
     var d = state.draft;
-    // 只画内容。监听器在 renderCompose 里一次性挂在 #picker 上，
-    // 放这里每重绘一次就会多挂一个，删除会连着触发好几次。
-    host.innerHTML = d.photos.map(function (p, i) {
-      return '<div class="slot"><img src="' + p.preview + '" alt="">' +
-        '<button class="del" data-i="' + i + '" aria-label="删除">×</button></div>';
-    }).join('') +
+    var keep = d.keepPhotos || [];
+
+    // 已有照片（编辑时）在前，新加的在后；两段各自可以左右移动
+    var cells = keep.map(function (p, i) {
+      return '<div class="slot"><img data-key="' + esc(p) + '" alt="">' +
+        '<button class="del" data-kdel="' + i + '" aria-label="删除">×</button>' +
+        '<div class="mv">' +
+          '<button data-kmv="' + i + '" data-dir="-1" aria-label="左移">‹</button>' +
+          '<button data-kmv="' + i + '" data-dir="1" aria-label="右移">›</button>' +
+        '</div></div>';
+    }).concat(d.photos.map(function (p, i) {
+      return '<div class="slot new"><img src="' + p.preview + '" alt="">' +
+        '<button class="del" data-i="' + i + '" aria-label="删除">×</button>' +
+        '<span class="badge">新</span>' +
+        '<div class="mv">' +
+          '<button data-mv="' + i + '" data-dir="-1" aria-label="左移">‹</button>' +
+          '<button data-mv="' + i + '" data-dir="1" aria-label="右移">›</button>' +
+        '</div></div>';
+    }));
+
+    host.innerHTML = cells.join('') +
       '<button class="add" id="addPhoto"><span class="glyph">＋</span>加照片</button>';
+    hydratePhotos(host);
+  }
+
+  function movePhoto(list, i, dir) {
+    var j = i + dir;
+    if (j < 0 || j >= list.length) return false;
+    var t = list[i]; list[i] = list[j]; list[j] = t;
+    return true;
   }
 
   function rateRows(host, list, bag) {
@@ -854,24 +978,105 @@
     return base + '-' + Date.now().toString(36);
   }
 
+  /* ================= 后台上传队列 =================
+     点保存立刻返回，上传在后台跑，可以马上接着记下一条。
+     队列串行执行：手机上行就那么宽，并发只会让每一条都变慢。 */
+
+  var queue = [];
+  var running = false;
+
+  function enqueue(job) {
+    queue.push(job);
+    renderQueue();
+    pump();
+  }
+
+  function pump() {
+    if (running || !queue.length) return;
+    running = true;
+    var job = queue[0];
+    job.state = 'running';
+    job.step = '准备…';
+    renderQueue();
+
+    runJob(job).then(function () {
+      queue.shift();
+      running = false;
+      renderQueue();
+      toast('已保存 ' + job.label);
+      return loadData().then(function () { if (state.view === 'timeline') go('timeline'); });
+    }).catch(function (err) {
+      job.state = 'failed';
+      job.error = (err.step ? '「' + err.step + '」' : '') + (err.message || err);
+      running = false;
+      renderQueue();
+      toast('保存失败：' + job.error, true);
+    }).then(function () { pump(); });
+  }
+
+  function runJob(job) {
+    /* 提交前重新读一次云端的 entries.json，而不是用内存里的。
+       两次上传排队时，第二条如果拿的是排队那一刻的旧列表，
+       会把第一条刚写进去的记录覆盖掉。 */
+    return GitStore.readJSON('entries.json').then(function (remote) {
+      var entries = (remote || []).slice();
+      var at = entries.findIndex(function (x) { return x.id === job.entry.id; });
+      if (at >= 0) entries[at] = job.entry; else entries.push(job.entry);
+
+      var files = job.files.concat([
+        { path: 'entries.json', text: JSON.stringify(entries, null, 2) },
+      ]);
+      return GitStore.commit(files, job.message, function (t) {
+        job.step = t;
+        renderQueue();
+      });
+    });
+  }
+
+  function renderQueue() {
+    var host = $('#queue');
+    if (!queue.length) { host.hidden = true; host.innerHTML = ''; return; }
+    host.hidden = false;
+    host.innerHTML = queue.map(function (j, i) {
+      if (j.state === 'failed') {
+        return '<div class="qrow err"><span class="qtxt">' + esc(j.label) + ' · ' +
+          esc(j.error) + '</span>' +
+          '<button data-retry="' + i + '">重试</button>' +
+          '<button data-drop="' + i + '">丢弃</button></div>';
+      }
+      return '<div class="qrow"><span class="spin"></span>' +
+        '<span class="qtxt">' + esc(j.label) + ' · ' +
+        esc(j.state === 'running' ? (j.step || '上传中') : '排队中') + '</span></div>';
+    }).join('');
+  }
+
+  function bindQueue() {
+    $('#queue').addEventListener('click', function (ev) {
+      var r = ev.target.closest('[data-retry]');
+      if (r) {
+        var j = queue[Number(r.dataset.retry)];
+        if (j) { j.state = 'queued'; j.error = ''; renderQueue(); pump(); }
+        return;
+      }
+      var d = ev.target.closest('[data-drop]');
+      if (d) {
+        var idx = Number(d.dataset.drop);
+        if (confirm('丢弃这次上传？照片会丢失。')) { queue.splice(idx, 1); renderQueue(); pump(); }
+      }
+    });
+  }
+
   function saveDraft() {
     var d = state.draft;
-    if (!d.date) return toast('先选日期', true);
+    if (!d.date) return toast('先选时间', true);
     if (!d.photos.length && !d.note) return toast('至少加一张照片或写点备注', true);
 
-    var btn = $('#saveBtn'), prog = $('#saveProgress'),
-        bar = $('#saveProgress i'), msg = $('#saveMsg');
-    btn.disabled = true;
-    prog.hidden = false;
-    bar.style.width = '15%';
-    msg.textContent = '准备…';
-
-    var id = makeEntryId(d.date);
+    var id = d.editingId || makeEntryId(d.date);
     var files = [];
-    var paths = [];
+    var paths = (d.keepPhotos || []).slice();   // 编辑时保留的老照片
 
     d.photos.forEach(function (p, i) {
-      var path = 'photos/' + id + '/' + String(i + 1).padStart(2, '0') + '.jpg';
+      var path = 'photos/' + id + '/' + Date.now().toString(36) + i + '.jpg';
       files.push({ path: path, blob: p.blob });
       paths.push(path);
     });
@@ -882,68 +1087,88 @@
       photos: paths,
       products: d.products,
     };
-    if (d.makeupScores && Object.keys(d.makeupScores).length) {
-      entry.makeup = Object.assign({}, entry.makeup, d.makeupScores);
+    if ((d.makeupScores && Object.keys(d.makeupScores).length) ||
+        (d.makeupState && d.makeupState.length)) {
+      entry.makeup = Object.assign({}, d.makeupScores);
+      if (d.makeupState && d.makeupState.length) entry.makeup.state = d.makeupState;
     }
     if (d.ai) {
-      // 只留结论，不留原始返回 —— 档案里不需要模型的中间产物
       entry.ai = { model: d.ai.model, at: d.ai.at, best: d.ai.best };
-      if (d.ai.zones) entry.zones = Object.assign({}, d.ai.zones, entry.zones);
+      if (d.ai.zones) entry.zones = Object.assign({}, d.ai.zones, d.zones || {});
+    } else if (d.zones) {
+      entry.zones = d.zones;
     }
 
-    var entries = ((state.data && state.data.entries) || []).slice();
-    // 同 id 就替换，否则追加 —— 免得重复保存产生两条
-    var at = entries.findIndex(function (x) { return x.id === id; });
-    if (at >= 0) entries[at] = entry; else entries.push(entry);
+    enqueue({
+      entry: entry,
+      files: files,
+      label: fmtDate(d.date) + ' ' + fmtTime(d.at),
+      message: (d.editingId ? '修改 ' : '记录 ') + d.date + '（' + id + '）',
+      state: 'queued',
+    });
 
-    files.push({ path: 'entries.json', text: JSON.stringify(entries, null, 2) });
+    // 立刻放行：草稿清空、回时间线，可以马上接着记下一条
+    d.photos.forEach(function (p) { URL.revokeObjectURL(p.preview); });
+    state.draft = null;
+    toast(files.length ? '后台上传中，可以继续记录' : '已加入队列');
+    go('timeline');
+  }
 
-    bar.style.width = '40%';
-    msg.textContent = '上传中（' + d.photos.length + ' 张照片）…';
-
-    // 照片和 entries.json 在同一次提交里：要么全成，要么全不成，
-    // 不会出现「照片传上去了但记录没写」这种半截状态。
-    GitStore.commit(files, '记录 ' + d.date + '（' + id + '）', function (t) {
-      msg.textContent = t + '…';
-    })
-      .then(function () {
-        bar.style.width = '85%';
-        msg.textContent = '刷新…';
-        d.photos.forEach(function (p) { URL.revokeObjectURL(p.preview); });
-        state.draft = null;
-        return loadData();
-      })
-      .then(function () {
-        bar.style.width = '100%';
-        toast('已保存到云端');
-        go('timeline');
-      })
-      .catch(function (err) {
-        var where = err.step ? '「' + err.step + '」这一步：' : '';
-        toast('保存失败 · ' + where + (err.message || err), true);
-        msg.textContent = '失败了，草稿还在，可以直接重试';
-        bar.style.background = 'var(--focus)';
-        btn.disabled = false;
-        btn.textContent = '重试保存';
-      });
+  function editEntry(id) {
+    var e = ((state.data && state.data.entries) || [])
+      .filter(function (x) { return x.id === id; })[0];
+    if (!e) return;
+    state.draft = {
+      editingId: e.id,
+      photos: [],                       // 新加的
+      keepPhotos: (e.photos || []).slice(),   // 已有的，可删可排序
+      at: e.at || (e.date + 'T12:00'),
+      date: e.date,
+      slot: e.slot,
+      face: e.face || 'makeup',
+      kind: e.kind || 'both',
+      light: e.light || '',
+      scores: Object.assign({}, e.scores),
+      makeupScores: Object.assign({}, e.makeup),
+      makeupState: (e.makeup && e.makeup.state) ? e.makeup.state.slice() : [],
+      products: {
+        skincare: ((e.products || {}).skincare || []).slice(),
+        makeup: ((e.products || {}).makeup || []).slice(),
+      },
+      zones: Object.assign({}, e.zones),
+      note: e.note || '',
+      tags: (e.tags || []).slice(),
+      ai: null,
+    };
+    go('compose');
   }
 
   function deleteEntry(id) {
     var entries = ((state.data && state.data.entries) || []);
     var e = entries.filter(function (x) { return x.id === id; })[0];
-    if (!e) return Promise.reject(new Error('找不到这条记录'));
+    if (!e) return;
+    if (!confirm('删除 ' + fmtDate(e.date) + ' ' + fmtTime(e.at) + ' 这条记录？\n' +
+                 (e.photos || []).length + ' 张照片会一起删掉，不可恢复。')) return;
 
-    var rest = entries.filter(function (x) { return x.id !== id; });
-
-    // 先删照片文件，再写回不含它的 entries.json —— 同样是一次提交
-    return GitStore.commitDelete(e.photos || [], '删除 ' + id + ' 的照片')
-      .then(function () {
-        return GitStore.commit(
-          [{ path: 'entries.json', text: JSON.stringify(rest, null, 2) }],
-          '删除记录 ' + id
-        );
-      })
-      .then(function () { return loadData(); });
+    toast('删除中…');
+    // 提交前重读云端，避免把别处刚加的记录覆盖掉
+    GitStore.readJSON('entries.json').then(function (remote) {
+      var rest = (remote || []).filter(function (x) { return x.id !== id; });
+      return GitStore.commit(
+        [{ path: 'entries.json', text: JSON.stringify(rest, null, 2) }],
+        '删除记录 ' + id
+      ).then(function () {
+        // 记录先删干净，再清照片文件 —— 反过来的话中途失败会留下引用不到的记录
+        return (e.photos || []).length
+          ? GitStore.commitDelete(e.photos, '删除 ' + id + ' 的照片')
+          : null;
+      });
+    }).then(loadData).then(function () {
+      toast('已删除');
+      go('timeline');
+    }).catch(function (err) {
+      toast('删除失败：' + (err.message || err), true);
+    });
   }
 
   /* ================= 路由 ================= */
@@ -953,6 +1178,7 @@
     trend: renderTrend,
     compose: renderCompose,
     products: renderProducts,
+    settings: renderSettings,
     mainlines: renderMainlines,
   };
 
@@ -969,60 +1195,134 @@
 
   var AI_INFO = {
     qwen: {
-      label: '百炼 qwen3-vl',
+      label: '百炼',
       where: 'bailian.console.aliyun.com → API-KEY',
-      note: '国内直连可用，手机上也能用',
+      note: '国内直连可用，手机上也能用。推荐日常用这个。',
+      ph: 'sk-...',
     },
     gemini: {
       label: 'Gemini',
       where: 'aistudio.google.com/apikey',
-      note: '判读更细，但国内要代理 —— 手机上通常连不上',
+      note: '判读更细，但国内要代理 —— 手机上通常连不上。',
+      ph: 'AIza...',
     },
   };
 
+  /* 不用 prompt()：装成 PWA 之后 iOS 上那个弹窗很难用，
+     长长的 API Key 粘不进去，有时干脆不弹。引导到设置页填。 */
   function ensureKey() {
-    var p = PrettierAI.provider();
     if (PrettierAI.getKey()) return true;
-    var info = AI_INFO[p];
-    var k = prompt('填一次 ' + info.label + ' 的 API Key（存在本机，只发给对应厂商）：\n' + info.where);
-    if (!k) return false;
-    PrettierAI.setKey(k.trim());
-    return true;
+    toast('先去设置里填 API Key', true);
+    go('settings');
+    return false;
   }
 
-  function aiPickerHTML() {
+
+
+  /* ================= 设置 ================= */
+
+  function renderSettings() {
+    var host = $('#view-settings');
     var p = PrettierAI.provider();
-    return '<div class="card" style="margin-bottom:18px">' +
-      '<div class="tiny" style="margin-bottom:10px">AI 引擎</div>' +
-      '<div class="segmented" id="aiProvider">' +
-        ['qwen', 'gemini'].map(function (k) {
-          return '<button data-v="' + k + '"' + (p === k ? ' class="on"' : '') + '>' +
-            esc(AI_INFO[k].label) + '</button>';
-        }).join('') +
-      '</div>' +
-      '<div class="tiny" style="margin-top:8px" id="aiNote">' + esc(AI_INFO[p].note) + '</div>' +
-      '<button class="clear" id="aiKeyBtn" type="button" style="margin-top:10px">' +
-        (PrettierAI.getKey() ? '换 API Key' : '填 API Key') +
-      '</button>' +
-    '</div>';
-  }
 
-  function bindAIPicker(host) {
-    var seg = $('#aiProvider', host);
-    if (!seg) return;
-    seg.addEventListener('click', function (ev) {
+    host.innerHTML =
+      '<div class="section-title">AI 判读</div>' +
+      '<div class="card">' +
+        '<div class="segmented" id="aiProvider">' +
+          ['qwen', 'gemini'].map(function (k) {
+            return '<button data-v="' + k + '"' + (p === k ? ' class="on"' : '') + '>' +
+              esc(AI_INFO[k].label) + '</button>';
+          }).join('') +
+        '</div>' +
+        '<div class="tiny" style="margin:10px 0 16px" id="aiNote">' + esc(AI_INFO[p].note) + '</div>' +
+
+        '<div class="field" style="margin:0">' +
+          '<label>API Key</label>' +
+          '<div class="key-row">' +
+            '<input type="password" id="aiKey" autocomplete="off" autocapitalize="off" ' +
+              'autocorrect="off" spellcheck="false" placeholder="' + esc(AI_INFO[p].ph) + '" ' +
+              'value="' + esc(PrettierAI.getKey()) + '">' +
+            '<button id="keyEye" type="button">显示</button>' +
+          '</div>' +
+          '<div class="tiny hint">去这里拿：' + esc(AI_INFO[p].where) + '</div>' +
+        '</div>' +
+
+        '<button class="btn ghost" id="aiTest" type="button" style="margin-top:14px">' +
+          '保存并测试' +
+        '</button>' +
+        '<div class="tiny" id="aiTestOut" style="margin-top:10px"></div>' +
+      '</div>' +
+
+      '<div class="section-title">云端</div>' +
+      '<div class="card">' +
+        '<div class="kv-line"><b>仓库</b><span>' + esc(state.owner + '/' + state.repo) + '</span></div>' +
+        '<button class="btn ghost" id="diagBtn" type="button" style="margin-top:14px">' +
+          '检查读写权限' +
+        '</button>' +
+        '<div class="tiny" id="diagOut" style="margin-top:10px"></div>' +
+      '</div>' +
+
+      '<div class="section-title">外观</div>' +
+      '<div class="card">' +
+        '<div class="segmented" id="themeSeg">' +
+          THEMES.map(function (t) {
+            return '<button data-v="' + t + '"' +
+              (get(LS.theme, 'light') === t ? ' class="on"' : '') + '>' +
+              THEME_LABEL[t] + '</button>';
+          }).join('') +
+        '</div>' +
+      '</div>';
+
+    var keyInput = $('#aiKey', host);
+
+    $('#aiProvider', host).addEventListener('click', function (ev) {
       var b = ev.target.closest('button');
       if (!b) return;
       PrettierAI.setProvider(b.dataset.v);
-      $$('#aiProvider button', host).forEach(function (x) { x.classList.remove('on'); });
-      b.classList.add('on');
-      $('#aiNote', host).textContent = AI_INFO[b.dataset.v].note;
-      $('#aiKeyBtn', host).textContent = PrettierAI.getKey() ? '换 API Key' : '填 API Key';
-      toast('已切到 ' + AI_INFO[b.dataset.v].label);
+      renderSettings();
     });
-    $('#aiKeyBtn', host).addEventListener('click', function () {
-      PrettierAI.setKey('');
-      if (ensureKey()) { this.textContent = '换 API Key'; toast('已保存'); }
+
+    $('#keyEye', host).addEventListener('click', function () {
+      var show = keyInput.type === 'password';
+      keyInput.type = show ? 'text' : 'password';
+      this.textContent = show ? '隐藏' : '显示';
+    });
+
+    $('#aiTest', host).addEventListener('click', function () {
+      var out = $('#aiTestOut', host);
+      var k = keyInput.value.trim();
+      if (!k) { out.textContent = '先填 Key'; return; }
+      PrettierAI.setKey(k);
+      out.textContent = '测试中…';
+      // 拿一张 8×8 的小图去打一次真实请求，能最快确认 key 和网络
+      var c = document.createElement('canvas');
+      c.width = c.height = 8;
+      c.getContext('2d').fillRect(0, 0, 8, 8);
+      c.toBlob(function (b) {
+        PrettierAI.identifyProducts([b])
+          .then(function () { out.innerHTML = '✅ 可用（' + esc(PrettierAI.modelName()) + '）'; })
+          .catch(function (e) { out.innerHTML = '❌ ' + esc(e.message || e); });
+      }, 'image/jpeg');
+    });
+
+    $('#diagBtn', host).addEventListener('click', function () {
+      var o = $('#diagOut', host);
+      o.textContent = '检查中…';
+      GitStore.selftest().then(function (r) {
+        o.innerHTML = [
+          '读取：' + (r.read || '—'),
+          '写入：' + (r.write || '—'),
+          r.error ? '错误：' + esc(r.error) : '',
+        ].filter(Boolean).join('<br>');
+      });
+    });
+
+    $('#themeSeg', host).addEventListener('click', function (ev) {
+      var b = ev.target.closest('button');
+      if (!b) return;
+      applyTheme(b.dataset.v);
+      $$('#themeSeg button', host).forEach(function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
     });
   }
 
@@ -1033,62 +1333,41 @@
   function renderProducts() {
     var host = $('#view-products');
     var list = allProducts();
-    var diag =
-      '<div class="card" style="margin-bottom:18px">' +
-        '<div class="tiny" style="margin-bottom:10px">云端连接</div>' +
-        '<button class="clear" id="diagBtn" type="button">检查读写权限</button>' +
-        '<div id="diagOut" class="tiny" style="margin-top:8px"></div>' +
-      '</div>';
 
-    var head =
-      '<div class="section-title">产品库</div>' +
-      '<button class="btn ghost" id="scanBtn" type="button" style="margin-bottom:8px">' +
-        '拍产品照，AI 自动识别入库' +
-      '</button>' +
-      '<button class="btn ghost" id="addProdBtn" type="button" style="margin-bottom:18px">' +
-        '手动添加' +
-      '</button>' +
-      '<div id="scanOut"></div>' +
-      aiPickerHTML() + diag;
-
+    var body;
     if (!list.length) {
-      host.innerHTML = head +
-        '<div class="empty"><strong>产品库还是空的</strong>' +
-        '把护肤品和彩妆拍一张照，AI 会认出品牌和品名并入库。<br>' +
-        '入库之后，「记一条」里就能直接勾选今天用了哪些。</div>';
+      body = '<div class="empty"><strong>产品库还是空的</strong>' +
+        '拍一张护肤品或彩妆的照片，AI 会认出品牌和品名。<br>' +
+        '入库之后，记录里就能直接引用。</div>';
     } else {
-      // 在用的排前面，其余按分类归堆
-      var using = list.filter(function (p) { return p.status !== 'retired'; });
       var out = [];
       ['skincare', 'makeup'].forEach(function (kind) {
-        var rows = using.filter(function (p) { return (p.kind || 'skincare') === kind; });
+        var rows = list.filter(function (p) {
+          return (p.kind || 'skincare') === kind && p.status !== 'retired';
+        });
         if (!rows.length) return;
         out.push('<div class="cat-head">' + (kind === 'skincare' ? '护肤' : '彩妆') +
-                 ' · ' + rows.length + '</div>');
-        out.push(rows.map(prodCardHTML).join(''));
+                 '<span>' + rows.length + '</span></div>');
+        out.push('<div class="prod-list">' + rows.map(prodCardHTML).join('') + '</div>');
       });
       var retired = list.filter(function (p) { return p.status === 'retired'; });
       if (retired.length) {
-        out.push('<div class="cat-head">已停用 · ' + retired.length + '</div>');
-        out.push(retired.map(prodCardHTML).join(''));
+        out.push('<div class="cat-head">已停用<span>' + retired.length + '</span></div>');
+        out.push('<div class="prod-list dim">' + retired.map(prodCardHTML).join('') + '</div>');
       }
-      host.innerHTML = head + out.join('');
+      body = out.join('');
     }
 
-    bindAIPicker(host);
-    $('#diagBtn', host).addEventListener('click', function () {
-      var o = $('#diagOut', host);
-      o.textContent = '检查中…';
-      GitStore.selftest().then(function (r) {
-        o.innerHTML = [
-          '仓库：' + (r.repo || '—') + (r.private ? '（私有）' : ''),
-          '读取：' + (r.read || '—'),
-          '写入：' + (r.write || '—'),
-          r.error ? '错误：' + esc(r.error) : '',
-          r.step ? '失败步骤：' + esc(r.step) : '',
-        ].filter(Boolean).join('<br>');
-      });
-    });
+    host.innerHTML =
+      '<div class="tl-bar">' +
+        '<span class="tiny">产品库 · ' +
+          list.filter(function (p) { return p.status !== 'retired'; }).length + ' 件在用</span>' +
+        '<button id="scanBtn" type="button">＋ 拍照识别</button>' +
+      '</div>' +
+      '<div id="scanOut"></div>' +
+      body +
+      '<button class="more-toggle" id="addProdBtn" type="button">手动添加一件</button>';
+
     $('#scanBtn', host).addEventListener('click', function () { $('#prodInput').click(); });
     $('#addProdBtn', host).addEventListener('click', addProductManually);
     host.addEventListener('click', function (ev) {
@@ -1097,16 +1376,16 @@
       var t = ev.target.closest('[data-toggle]');
       if (t) return toggleProduct(t.dataset.toggle);
     });
+    hydratePhotos(host);
   }
 
   function prodCardHTML(p) {
     var sub = [p.brand, p.category].filter(Boolean).join(' · ');
     return '<div class="prod-card">' +
-      (p.photo
-        ? '<img class="thumb" data-key="' + esc(p.photo) + '" alt="">'
-        : '<div class="thumb ph">▢</div>') +
-      '<div><div class="nm">' + esc(p.name) + '</div>' +
-      (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') + '</div>' +
+      '<div class="pc-main">' +
+        '<div class="nm">' + esc(p.name) + '</div>' +
+        (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') +
+      '</div>' +
       '<div class="act">' +
         '<button data-toggle="' + esc(p.id) + '">' +
           (p.status === 'retired' ? '恢复' : '停用') + '</button>' +
@@ -1354,6 +1633,8 @@
       var b = ev.target.closest('button');
       if (b) go(b.dataset.view);
     });
+
+    $('#settingsBtn').addEventListener('click', function () { go('settings'); });
 
     $('#themeBtn').addEventListener('click', function () {
       var cur = get(LS.theme, 'light');
