@@ -313,7 +313,7 @@
     var ov = overall(e);
     var pills = [];
     if (e.face) pills.push('<span class="pill">' + esc(FACE[e.face] || e.face) + '</span>');
-    if (e.slot && !e.at) pills.push('<span class="pill">' + esc(SLOT[e.slot] || e.slot) + '</span>');
+    if (e.slot) pills.push('<span class="pill">' + esc(SLOT[e.slot] || e.slot) + '</span>');
     if (ov != null) pills.push('<span class="pill ' + pillLevel(ov) + '">肤况 ' + ov.toFixed(1) + '</span>');
     if (e.makeup && typeof e.makeup.fit === 'number') {
       pills.push('<span class="pill ' + pillLevel(e.makeup.fit) + '">妆 ' + e.makeup.fit + '</span>');
@@ -329,9 +329,7 @@
     return '<article class="entry" data-id="' + esc(e.id) + '">' + photos +
       '<div class="entry-body">' +
         '<div class="entry-head">' +
-        (fmtTime(e.at)
-          ? '<span class="entry-time">' + fmtTime(e.at) + '</span>'
-          : '<span class="entry-time">' + esc(SLOT[e.slot] || '') + '</span>') +
+        (fmtTime(e.at) ? '<span class="entry-time">' + fmtTime(e.at) + '</span>' : '') +
         '<div class="meta" style="margin-left:auto">' + pills.join('') + '</div></div>' +
         (e.light ? '<div class="tiny" style="margin-bottom:10px">' + esc(e.light) + '</div>' : '') +
         (tags ? '<div class="meta" style="margin-bottom:10px">' + tags + '</div>' : '') +
