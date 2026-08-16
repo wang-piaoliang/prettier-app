@@ -702,12 +702,7 @@
     var d = state.draft;
     if (!d.photos.length) return toast('先加照片', true);
 
-    if (!PrettierAI.getKey()) {
-      var k = prompt('填一次阿里云百炼的 API Key（存在本机，只发给百炼）：\n' +
-                     'bailian.console.aliyun.com → API-KEY');
-      if (!k) return;
-      PrettierAI.setKey(k.trim());
-    }
+    if (!ensureKey()) return;
 
     var btn = $('#aiBtn'), out = $('#aiOut');
     btn.disabled = true;
@@ -921,6 +916,67 @@
     hydratePhotos(document);
   }
 
+  /* ================= AI 引擎 ================= */
+
+  var AI_INFO = {
+    qwen: {
+      label: '百炼 qwen3-vl',
+      where: 'bailian.console.aliyun.com → API-KEY',
+      note: '国内直连可用，手机上也能用',
+    },
+    gemini: {
+      label: 'Gemini',
+      where: 'aistudio.google.com/apikey',
+      note: '判读更细，但国内要代理 —— 手机上通常连不上',
+    },
+  };
+
+  function ensureKey() {
+    var p = PrettierAI.provider();
+    if (PrettierAI.getKey()) return true;
+    var info = AI_INFO[p];
+    var k = prompt('填一次 ' + info.label + ' 的 API Key（存在本机，只发给对应厂商）：\n' + info.where);
+    if (!k) return false;
+    PrettierAI.setKey(k.trim());
+    return true;
+  }
+
+  function aiPickerHTML() {
+    var p = PrettierAI.provider();
+    return '<div class="card" style="margin-bottom:18px">' +
+      '<div class="tiny" style="margin-bottom:10px">AI 引擎</div>' +
+      '<div class="segmented" id="aiProvider">' +
+        ['qwen', 'gemini'].map(function (k) {
+          return '<button data-v="' + k + '"' + (p === k ? ' class="on"' : '') + '>' +
+            esc(AI_INFO[k].label) + '</button>';
+        }).join('') +
+      '</div>' +
+      '<div class="tiny" style="margin-top:8px" id="aiNote">' + esc(AI_INFO[p].note) + '</div>' +
+      '<button class="clear" id="aiKeyBtn" type="button" style="margin-top:10px">' +
+        (PrettierAI.getKey() ? '换 API Key' : '填 API Key') +
+      '</button>' +
+    '</div>';
+  }
+
+  function bindAIPicker(host) {
+    var seg = $('#aiProvider', host);
+    if (!seg) return;
+    seg.addEventListener('click', function (ev) {
+      var b = ev.target.closest('button');
+      if (!b) return;
+      PrettierAI.setProvider(b.dataset.v);
+      $$('#aiProvider button', host).forEach(function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      $('#aiNote', host).textContent = AI_INFO[b.dataset.v].note;
+      $('#aiKeyBtn', host).textContent = PrettierAI.getKey() ? '换 API Key' : '填 API Key';
+      toast('已切到 ' + AI_INFO[b.dataset.v].label);
+    });
+    $('#aiKeyBtn', host).addEventListener('click', function () {
+      PrettierAI.setKey('');
+      if (ensureKey()) { this.textContent = '换 API Key'; toast('已保存'); }
+    });
+  }
+
   /* ================= 产品库 ================= */
 
   function allProducts() { return (state.data && state.data.products) || []; }
@@ -937,7 +993,8 @@
       '<button class="btn ghost" id="addProdBtn" type="button" style="margin-bottom:18px">' +
         '手动添加' +
       '</button>' +
-      '<div id="scanOut"></div>';
+      '<div id="scanOut"></div>' +
+      aiPickerHTML();
 
     if (!list.length) {
       host.innerHTML = head +
@@ -963,6 +1020,7 @@
       host.innerHTML = head + out.join('');
     }
 
+    bindAIPicker(host);
     $('#scanBtn', host).addEventListener('click', function () { $('#prodInput').click(); });
     $('#addProdBtn', host).addEventListener('click', addProductManually);
     host.addEventListener('click', function (ev) {
@@ -1032,11 +1090,7 @@
   /* 拍产品 → AI 识别 → 只把【库里没有的】加进去 */
   function scanProducts(files) {
     if (!files || !files.length) return;
-    if (!PrettierAI.getKey()) {
-      var k = prompt('填一次阿里云百炼的 API Key（存在本机）：');
-      if (!k) return;
-      PrettierAI.setKey(k.trim());
-    }
+    if (!ensureKey()) return;
 
     var out = $('#scanOut');
     out.innerHTML = '<div class="card" style="margin-bottom:18px"><div class="tiny">识别中…</div></div>';
