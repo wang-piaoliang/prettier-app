@@ -274,12 +274,27 @@
     return rows ? '<div class="zones">' + rows + '</div>' : '';
   }
 
+  var COVER_MAX = 2;   // 时间线上最多铺开几张，其余折叠
+
   function entryHTML(e) {
-    var keys = e.photos || [];
+    var keys = (e.photos || []).slice();
+    // AI 判断出的最佳那张顶到最前，没有就按原顺序
+    var best = e.ai && typeof e.ai.best === 'number' ? e.ai.best : -1;
+    if (best > 0 && best < keys.length) {
+      keys = [keys[best]].concat(keys.filter(function (_, i) { return i !== best; }));
+    }
+
+    var shown = keys.slice(0, COVER_MAX);
+    var hidden = keys.length - shown.length;
+
     var photos = keys.length
-      ? '<div class="entry-photos n' + Math.min(keys.length, 4) + '">' +
-        keys.map(function (k) {
-          return '<img data-key="' + esc(k) + '" alt="">';
+      ? '<div class="entry-photos n' + shown.length + '" data-id="' + esc(e.id) + '">' +
+        shown.map(function (k, i) {
+          return '<button class="ph" data-idx="' + i + '" type="button">' +
+                 '<img data-key="' + esc(k) + '" alt="">' +
+                 (i === shown.length - 1 && hidden > 0
+                   ? '<span class="more">+' + hidden + '</span>' : '') +
+                 '</button>';
         }).join('') + '</div>'
       : '';
 
@@ -287,11 +302,17 @@
     var pills = [];
     if (e.face) pills.push('<span class="pill">' + esc(FACE[e.face] || e.face) + '</span>');
     if (e.slot) pills.push('<span class="pill">' + esc(SLOT[e.slot] || e.slot) + '</span>');
-    if (ov != null) pills.push('<span class="pill ' + pillLevel(ov) + '">综合 ' + ov.toFixed(1) + '</span>');
+    if (ov != null) pills.push('<span class="pill ' + pillLevel(ov) + '">肤况 ' + ov.toFixed(1) + '</span>');
+    if (e.makeup && typeof e.makeup.fit === 'number') {
+      pills.push('<span class="pill ' + pillLevel(e.makeup.fit) + '">妆 ' + e.makeup.fit + '</span>');
+    }
+    if (e.ai) pills.push('<span class="pill accent">AI</span>');
 
     var tags = (e.tags || []).map(function (t) {
       return '<span class="pill accent">' + esc(t) + '</span>';
     }).join('');
+
+    var prod = productsHTML(e.products);
 
     return '<article class="entry" data-id="' + esc(e.id) + '">' + photos +
       '<div class="entry-body">' +
@@ -301,9 +322,31 @@
         (e.light ? '<div class="tiny" style="margin-bottom:10px">' + esc(e.light) + '</div>' : '') +
         (tags ? '<div class="meta" style="margin-bottom:10px">' + tags + '</div>' : '') +
         scoresHTML(e.scores) +
+        prod +
         zonesHTML(e.zones) +
+        makeupHTML(e.makeup) +
         (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
       '</div></article>';
+  }
+
+  function productsHTML(p) {
+    if (!p) return '';
+    var rows = '';
+    if (p.skincare && p.skincare.length)
+      rows += '<div class="prow"><b>护肤</b><span>' + p.skincare.map(esc).join(' · ') + '</span></div>';
+    if (p.makeup && p.makeup.length)
+      rows += '<div class="prow"><b>彩妆</b><span>' + p.makeup.map(esc).join(' · ') + '</span></div>';
+    return rows ? '<div class="products">' + rows + '</div>' : '';
+  }
+
+  function makeupHTML(m) {
+    if (!m || (!m.verdict && !m.issues && typeof m.lasting !== 'number')) return '';
+    var bits = [];
+    if (typeof m.lasting === 'number') bits.push('持妆 ' + m.lasting + '/5');
+    if (m.issues && m.issues.length) bits.push(m.issues.join('；'));
+    return '<div class="note">' +
+      (bits.length ? '<b>妆容</b>　' + esc(bits.join('　·　')) + (m.verdict ? '<br>' : '') : '') +
+      (m.verdict ? esc(m.verdict) : '') + '</div>';
   }
 
   /* ---- 趋势图：按日聚合，横轴按真实日期间隔 ---- */
@@ -412,46 +455,93 @@
       host.innerHTML = '<div class="empty">还没有主线问题。</div>';
       return;
     }
-    var active = ml.filter(function (m) { return m.status !== 'resolved'; });
-    var done = ml.filter(function (m) { return m.status === 'resolved'; });
 
-    var card = function (m) {
+    var card = function (m, idx) {
+      var body = [
+        m.summary ? '<div class="body">' + esc(m.summary) + '</div>' : '',
+        m.plan ? '<div class="next"><b>怎么做</b><br>' + esc(m.plan) + '</div>' : '',
+        m.watch ? '<div class="next"><b>注意</b><br>' + esc(m.watch) + '</div>' : '',
+        m.invalid ? '<div class="next"><b>无效的做法</b><br>' + esc(m.invalid) + '</div>' : '',
+      ].join('');
+
       return '<div class="card mainline">' +
-        '<h3>' + esc(m.key) + '</h3>' +
-        '<div class="body">' + esc(m.summary) + '</div>' +
-        (m.next ? '<div class="next">' + esc(m.next) + '</div>' : '') +
-        '</div>';
+        '<button class="ml-head" type="button" data-i="' + idx + '" aria-expanded="false">' +
+          '<span class="ml-title">' + esc(m.key) + '</span>' +
+          (m.area ? '<span class="pill">' + esc(m.area) + '</span>' : '') +
+          '<span class="ml-caret">▾</span>' +
+        '</button>' +
+        '<div class="ml-body" hidden>' + body + '</div>' +
+      '</div>';
     };
 
-    host.innerHTML =
-      '<div class="section-title">在跟的问题</div>' + active.map(card).join('') +
-      (done.length ? '<div class="section-title">已排除</div>' + done.map(card).join('') : '');
+    host.innerHTML = '<div class="section-title">在跟的问题</div>' +
+      ml.map(card).join('') +
+      procedureHTML();
+
+    host.addEventListener('click', function (ev) {
+      var h = ev.target.closest('.ml-head');
+      if (!h) return;
+      var body = h.nextElementSibling;
+      var open = !body.hidden;
+      body.hidden = open;
+      h.setAttribute('aria-expanded', String(!open));
+      h.classList.toggle('open', !open);
+    });
+  }
+
+  function procedureHTML() {
+    var list = (state.data && state.data.procedures) || [];
+    if (!list.length) {
+      return '<div class="section-title">医美记录</div>' +
+        '<div class="empty">还没有记录。做过什么、什么时候做的，记在这里。</div>';
+    }
+    return '<div class="section-title">医美记录</div>' +
+      list.slice().reverse().map(function (p) {
+        return '<div class="card" style="margin-bottom:12px">' +
+          '<div class="entry-head" style="border:none;margin:0;padding:0">' +
+            '<span class="entry-date">' + fmtDate(p.date) + '</span>' +
+            '<span class="pill accent" style="margin-left:auto">' + esc(p.name) + '</span>' +
+          '</div>' +
+          (p.note ? '<div class="note" style="border:none;padding-top:8px">' +
+                    esc(p.note) + '</div>' : '') +
+        '</div>';
+      }).join('');
   }
 
   /* ---- 记一条 ---- */
 
+  function lastEntry() {
+    var all = newestFirst((state.data && state.data.entries) || []);
+    return all[0] || null;
+  }
+
   function blankDraft() {
     var now = new Date();
+    // 护肤品从照片上看不出来，而且基本天天一样 —— 默认沿用上一条，自己改
+    var prev = lastEntry();
+    var carried = prev && prev.products
+      ? { skincare: (prev.products.skincare || []).slice(),
+          makeup: (prev.products.makeup || []).slice() }
+      : { skincare: [], makeup: [] };
+
     return {
       photos: [],
       date: todayISO(),
       slot: slotFromHour(now.getHours()),
-      face: 'bare',
-      kind: 'skin',
+      face: 'makeup',
+      kind: 'both',
       light: '',
       scores: {},
+      makeupScores: {},
+      products: carried,
+      carriedFrom: prev ? prev.date : null,
       note: '',
       tags: [],
+      ai: null,
     };
   }
 
-  var LIGHT_PRESETS = [
-    '均匀正面光 · 素颜标准位',
-    '室内暖光',
-    '近距离侧光',
-    '室外自然光',
-    '棚灯正面光',
-  ];
+  var LIGHT_PRESETS = ['窗边自然光', '室内暖光', '室内白光', '近距离侧光', '均匀正面光', '室外'];
 
   function renderCompose() {
     var host = $('#view-compose');
@@ -463,9 +553,14 @@
 
       '<div class="field"><label>照片</label>' +
         '<div class="picker" id="picker"></div>' +
-        '<div class="tiny hint">会自动压到长边 1600px 再上传。' +
-        '同一次观察的多张（比如左右脸）放在一条里。</div>' +
+        '<div class="tiny hint">会自动压到长边 1600px、压平 iPhone 的 HDR 再上传。' +
+        '同一次观察的多张放一条里。</div>' +
       '</div>' +
+
+      '<button class="btn ghost" id="aiBtn" type="button" style="margin-bottom:20px">' +
+        '让 AI 看照片打分' +
+      '</button>' +
+      '<div id="aiOut"></div>' +
 
       '<div class="field"><label>日期</label>' +
         '<input type="date" id="fDate" value="' + esc(d.date) + '">' +
@@ -474,22 +569,22 @@
 
       '<div class="field"><label>时段</label>' +
         '<div class="segmented" id="fSlot">' +
-        SLOT_ORDER.map(function (s) {
-          return '<button data-v="' + s + '"' + (d.slot === s ? ' class="on"' : '') + '>' +
-            SLOT[s] + '</button>';
+        SLOT_ORDER.map(function (x) {
+          return '<button data-v="' + x + '"' + (d.slot === x ? ' class="on"' : '') + '>' +
+            SLOT[x] + '</button>';
         }).join('') + '</div></div>' +
 
       '<div class="field"><label>素颜还是带妆</label>' +
         '<div class="segmented" id="fFace">' +
-        ['bare', 'makeup'].map(function (s) {
-          return '<button data-v="' + s + '"' + (d.face === s ? ' class="on"' : '') + '>' +
-            FACE[s] + '</button>';
+        ['bare', 'makeup'].map(function (x) {
+          return '<button data-v="' + x + '"' + (d.face === x ? ' class="on"' : '') + '>' +
+            FACE[x] + '</button>';
         }).join('') + '</div>' +
-        '<div class="tiny hint">带妆照判读不了色斑和泛红，只有素颜照能进对比。</div>' +
+        '<div class="tiny hint">带妆照判读不了色斑，只有素颜照能进纵向对比。</div>' +
       '</div>' +
 
       '<div class="field"><label>光线条件</label>' +
-        '<input type="text" id="fLight" placeholder="比如：窗边自然光，正面" value="' + esc(d.light) + '">' +
+        '<input type="text" id="fLight" placeholder="比如：窗边自然光" value="' + esc(d.light) + '">' +
         '<div class="segmented" id="lightPresets" style="margin-top:8px">' +
         LIGHT_PRESETS.map(function (p) {
           return '<button data-v="' + esc(p) + '" style="flex:0 1 auto;font-size:12px;min-height:36px">' +
@@ -497,12 +592,29 @@
         }).join('') + '</div>' +
       '</div>' +
 
-      '<div class="field"><label>评分（没看清就别填）</label>' +
+      '<div class="field"><label>今天用的产品' +
+        (d.carriedFrom ? '（沿用 ' + fmtDate(d.carriedFrom) + '，改动直接编辑）' : '') +
+        '</label>' +
+        '<div class="prod-edit">' +
+          '<div class="prow"><b>护肤</b>' +
+            '<input type="text" id="fSkincare" placeholder="用顿号或逗号分隔" value="' +
+            esc((d.products.skincare || []).join('、')) + '"></div>' +
+          '<div class="prow"><b>彩妆</b>' +
+            '<input type="text" id="fMakeup" placeholder="用顿号或逗号分隔" value="' +
+            esc((d.products.makeup || []).join('、')) + '"></div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="field"><label>肤况评分（看不清就留空）</label>' +
         '<div class="card" id="fScores"></div>' +
       '</div>' +
 
+      '<div class="field"><label>妆容</label>' +
+        '<div class="card" id="fMakeupScores"></div>' +
+      '</div>' +
+
       '<div class="field"><label>备注</label>' +
-        '<textarea id="fNote" placeholder="看到什么就写什么">' + esc(d.note) + '</textarea>' +
+        '<textarea id="fNote" placeholder="看到什么写什么">' + esc(d.note) + '</textarea>' +
       '</div>' +
 
       '<div class="field"><label>标签（空格或逗号分隔）</label>' +
@@ -518,8 +630,6 @@
     drawPicker();
     drawRates();
 
-    // 这两个容器在这次 renderCompose 里是固定的，监听器挂一次就够，
-    // 内容重绘走 drawPicker / drawRates，不再动监听器。
     $('#picker', host).addEventListener('click', function (ev) {
       if (ev.target.closest('#addPhoto')) { $('#fileInput').click(); return; }
       var b = ev.target.closest('.del');
@@ -539,12 +649,24 @@
       drawRates();
     });
 
+    $('#fMakeupScores', host).addEventListener('click', function (ev) {
+      var c = ev.target.closest('[data-clear]');
+      if (c) { delete d.makeupScores[c.dataset.clear]; drawRates(); return; }
+      var b = ev.target.closest('[data-k]');
+      if (!b) return;
+      d.makeupScores[b.dataset.k] = Number(b.dataset.v);
+      drawRates();
+    });
+
     $('#fDate', host).addEventListener('change', function () { d.date = this.value; });
     $('#fLight', host).addEventListener('input', function () { d.light = this.value; });
     $('#fNote', host).addEventListener('input', function () { d.note = this.value; });
     $('#fTags', host).addEventListener('input', function () {
       d.tags = this.value.split(/[\s,，、]+/).filter(Boolean);
     });
+    var splitList = function (v) { return v.split(/[,，、]+/).map(function (x) { return x.trim(); }).filter(Boolean); };
+    $('#fSkincare', host).addEventListener('input', function () { d.products.skincare = splitList(this.value); });
+    $('#fMakeup', host).addEventListener('input', function () { d.products.makeup = splitList(this.value); });
 
     var seg = function (sel, key) {
       $(sel, host).addEventListener('click', function (ev) {
@@ -565,11 +687,65 @@
       $('#fLight', host).value = d.light;
     });
 
+    $('#aiBtn', host).addEventListener('click', runAI);
     $('#saveBtn', host).addEventListener('click', saveDraft);
     $('#resetBtn', host).addEventListener('click', function () {
       if (!confirm('清空这条草稿？')) return;
       state.draft = blankDraft();
       renderCompose();
+    });
+  }
+
+  /* ---- AI 判读 ---- */
+
+  function runAI() {
+    var d = state.draft;
+    if (!d.photos.length) return toast('先加照片', true);
+
+    if (!PrettierAI.getKey()) {
+      var k = prompt('填一次阿里云百炼的 API Key（存在本机，只发给百炼）：\n' +
+                     'bailian.console.aliyun.com → API-KEY');
+      if (!k) return;
+      PrettierAI.setKey(k.trim());
+    }
+
+    var btn = $('#aiBtn'), out = $('#aiOut');
+    btn.disabled = true;
+    btn.textContent = 'AI 看照片中…';
+    out.innerHTML = '';
+
+    var S = state.data || {};
+    PrettierAI.analyze(d.photos.map(function (p) { return p.blob; }), {
+      face: d.face,
+      light: d.light,
+      slotLabel: SLOT[d.slot],
+      dimensions: S.dimensions || [],
+      makeupDimensions: S.makeupDimensions || [],
+      mirrored: true,
+      background: (S.mainlines || []).map(function (m) {
+        return '· ' + m.key + (m.area ? '（' + m.area + '）' : '');
+      }).join('\n'),
+    }).then(function (r) {
+      d.ai = r;
+      // AI 给的分直接填进去，你可以再改
+      Object.assign(d.scores, r.scores || {});
+      Object.assign(d.makeupScores, r.makeup || {});
+      if (r.tags && r.tags.length) d.tags = r.tags;
+      if (r.summary && !d.note) d.note = r.summary;
+
+      renderCompose();
+      $('#aiOut').innerHTML =
+        '<div class="card" style="margin-bottom:20px">' +
+          '<div class="tiny" style="margin-bottom:8px">AI 判读 · ' + esc(r.model) + '</div>' +
+          (r.summary ? '<div class="zone-text">' + esc(r.summary) + '</div>' : '') +
+          zonesHTML(r.zones) +
+          '<div class="tiny" style="margin-top:10px">分数已填进下面，随时可以改。' +
+          '看不清的项目 AI 会留空，那是对的。</div>' +
+        '</div>';
+    }).catch(function (err) {
+      toast('AI 判读失败：' + (err.message || err), true);
+      btn.disabled = false;
+      btn.textContent = '让 AI 看照片打分';
     });
   }
 
@@ -586,24 +762,27 @@
       '<button class="add" id="addPhoto"><span class="glyph">＋</span>加照片</button>';
   }
 
-  function drawRates() {
-    var host = $('#fScores');
+  function rateRows(host, list, bag) {
     if (!host) return;
-    var d = state.draft;
-    host.innerHTML = dims().map(function (dim) {
-      var v = d.scores[dim.key];
+    host.innerHTML = list.map(function (dim) {
+      var v = bag[dim.key];
       var stars = '';
       for (var i = 1; i <= 5; i++) {
         stars += '<button data-k="' + dim.key + '" data-v="' + i + '" class="' +
           (v >= i ? 'on' : '') + '" aria-label="' + dim.label + ' ' + i + '">●</button>';
       }
-      return '<div class="rate" title="' + esc(dim.hint) + '">' +
+      return '<div class="rate" title="' + esc(dim.hint || '') + '">' +
         '<span class="name">' + esc(dim.label) + '</span>' +
         '<span class="stars">' + stars + '</span>' +
         (v ? '<button class="clear" data-clear="' + dim.key + '">清除</button>' : '') +
         '</div>';
-    }).join('');
-    // 同样只画内容，监听器在 renderCompose 里挂一次
+    }).join('') || '<div class="tiny">还没有维度</div>';
+  }
+
+  function drawRates() {
+    var d = state.draft, S = state.data || {};
+    rateRows($('#fScores'), S.dimensions || [], d.scores);
+    rateRows($('#fMakeupScores'), S.makeupDimensions || [], d.makeupScores);
   }
 
   function onFilesPicked(files) {
@@ -662,7 +841,16 @@
       id: id, date: d.date, slot: d.slot, face: d.face, kind: d.kind,
       light: d.light, scores: d.scores, tags: d.tags, note: d.note,
       photos: paths,
+      products: d.products,
     };
+    if (d.makeupScores && Object.keys(d.makeupScores).length) {
+      entry.makeup = Object.assign({}, entry.makeup, d.makeupScores);
+    }
+    if (d.ai) {
+      // 只留结论，不留原始返回 —— 档案里不需要模型的中间产物
+      entry.ai = { model: d.ai.model, at: d.ai.at, best: d.ai.best };
+      if (d.ai.zones) entry.zones = Object.assign({}, d.ai.zones, entry.zones);
+    }
 
     var entries = ((state.data && state.data.entries) || []).slice();
     // 同 id 就替换，否则追加 —— 免得重复保存产生两条
@@ -729,6 +917,91 @@
     $$('.tabbar button').forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
     window.scrollTo(0, 0);
     (RENDER[view] || function () {})();
+  }
+
+  /* ================= 灯箱（可左右滑） ================= */
+
+  var lb = { keys: [], i: 0 };
+
+  function openLightbox(entryId, startIdx) {
+    var e = ((state.data && state.data.entries) || [])
+      .filter(function (x) { return x.id === entryId; })[0];
+    if (!e || !e.photos || !e.photos.length) return;
+
+    var keys = e.photos.slice();
+    var best = e.ai && typeof e.ai.best === 'number' ? e.ai.best : -1;
+    if (best > 0 && best < keys.length) {
+      keys = [keys[best]].concat(keys.filter(function (_, i) { return i !== best; }));
+    }
+    lb.keys = keys;
+    lb.i = Math.max(0, Math.min(startIdx || 0, keys.length - 1));
+
+    $('#lightbox').hidden = false;
+    renderLightbox();
+  }
+
+  function renderLightbox() {
+    var box = $('#lightbox');
+    var img = $('#lbImg');
+    var cnt = $('#lbCount');
+    cnt.textContent = (lb.i + 1) + ' / ' + lb.keys.length;
+    cnt.hidden = lb.keys.length < 2;
+    $('#lbPrev').hidden = $('#lbNext').hidden = lb.keys.length < 2;
+
+    img.style.opacity = '.25';
+    photoURL(lb.keys[lb.i]).then(function (u) {
+      img.src = u;
+      img.style.opacity = '1';
+    }).catch(function () { img.style.opacity = '1'; });
+
+    // 顺手预取相邻两张，滑动时不用等
+    [lb.i - 1, lb.i + 1].forEach(function (j) {
+      if (j >= 0 && j < lb.keys.length) photoURL(lb.keys[j]).catch(function () {});
+    });
+  }
+
+  function step(d) {
+    if (lb.keys.length < 2) return;
+    lb.i = (lb.i + d + lb.keys.length) % lb.keys.length;
+    renderLightbox();
+  }
+
+  function bindLightbox() {
+    var box = $('#lightbox');
+
+    document.addEventListener('click', function (ev) {
+      var ph = ev.target.closest && ev.target.closest('.entry-photos .ph');
+      if (ph) {
+        var wrap = ph.closest('.entry-photos');
+        openLightbox(wrap.dataset.id, Number(ph.dataset.idx) || 0);
+        return;
+      }
+      if (ev.target.closest('#lbPrev')) { step(-1); return; }
+      if (ev.target.closest('#lbNext')) { step(1); return; }
+      // 点图片本身不关闭，点背景才关
+      if (ev.target.id === 'lightbox' || ev.target.closest('#lbClose')) box.hidden = true;
+    });
+
+    document.addEventListener('keydown', function (ev) {
+      if (box.hidden) return;
+      if (ev.key === 'Escape') box.hidden = true;
+      if (ev.key === 'ArrowLeft') step(-1);
+      if (ev.key === 'ArrowRight') step(1);
+    });
+
+    // 触摸横滑
+    var x0 = null, y0 = null;
+    box.addEventListener('touchstart', function (ev) {
+      x0 = ev.touches[0].clientX; y0 = ev.touches[0].clientY;
+    }, { passive: true });
+    box.addEventListener('touchend', function (ev) {
+      if (x0 == null) return;
+      var dx = ev.changedTouches[0].clientX - x0;
+      var dy = ev.changedTouches[0].clientY - y0;
+      // 横向位移够大、且明显比纵向大，才算翻页；否则可能是想滚动或关闭
+      if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) step(dx < 0 ? 1 : -1);
+      x0 = y0 = null;
+    }, { passive: true });
   }
 
   /* ================= 启动 ================= */
@@ -801,13 +1074,8 @@
         .catch(function (err) { toast(String(err.message || err), true); });
     });
 
-    // 灯箱
-    var lb = $('#lightbox');
-    document.addEventListener('click', function (ev) {
-      var img = ev.target.closest('.entry-photos img');
-      if (img && img.src) { $('#lightbox img').src = img.src; lb.hidden = false; return; }
-      if (ev.target.closest('#lightbox')) lb.hidden = true;
-    });
+    // 灯箱：点开后可左右滑动看同一条记录里的全部照片
+    bindLightbox();
 
     if (state.owner && state.repo && state.token) {
       showApp();

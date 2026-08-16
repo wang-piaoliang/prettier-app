@@ -84,10 +84,17 @@
   <!-- 选图：capture 不写死，这样相册和相机都能选 -->
   <input type="file" id="fileInput" accept="image/*" multiple hidden />
 
-  <div id="lightbox" hidden><img alt="" /></div>
+  <div id="lightbox" hidden>
+    <button id="lbClose" type="button" aria-label="关闭">✕</button>
+    <button id="lbPrev" type="button" aria-label="上一张">‹</button>
+    <img id="lbImg" alt="" />
+    <button id="lbNext" type="button" aria-label="下一张">›</button>
+    <div id="lbCount"></div>
+  </div>
   <div id="toast" hidden></div>
 
   <script src="assets/photo.js"></script>
+  <script src="assets/ai.js"></script>
   <script src="assets/store.js"></script>
   <script src="assets/app.js"></script>
 </body>
