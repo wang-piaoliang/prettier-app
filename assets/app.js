@@ -693,9 +693,14 @@
     anchor.replaceWith(box);
     var ta = box.querySelector('#dn-text');
     ta.focus();
-    box.querySelector('.ie-cancel').addEventListener('click', function () { go('timeline'); });
+    box.querySelector('.ie-cancel').addEventListener('click', function () {
+      box.remove();
+      go('timeline');
+    });
     box.querySelector('.ie-ok').addEventListener('click', function () {
-      saveDayNote(date, ta.value);
+      var v = ta.value;
+      box.remove();
+      saveDayNote(date, v);
     });
   }
 
@@ -996,16 +1001,22 @@
     );
     anchor.replaceWith(box);
     box.querySelector('#w-kg').focus();
-    box.querySelector('.ie-cancel').addEventListener('click', function () { go('mainlines'); });
+    box.querySelector('.ie-cancel').addEventListener('click', function () {
+      box.remove();
+      go('mainlines');
+    });
     box.querySelector('.ie-ok').addEventListener('click', function () {
       // 界面上填的是斤，内部统一存 kg —— BMI 要用 kg 算
       var jin = Number(box.querySelector('#w-kg').value);
       if (!jin || jin < 40 || jin > 400) return toast('体重填一下（斤）', true);
-      saveWeight({
+      var rec = {
         date: box.querySelector('#w-date').value || todayISO(),
         kg: Math.round((jin / 2) * 100) / 100,
         note: box.querySelector('#w-note').value.trim() || undefined,
-      }, cur ? cur.date : null);
+      };
+      var oldDate = cur ? cur.date : null;
+      box.remove();
+      saveWeight(rec, oldDate);
     });
   }
 
@@ -1760,7 +1771,8 @@
      重绘会把打开的编辑框连同没保存的内容一起冲掉 —— 丢数据。
      所以自动重绘一律先问一句：现在有人在编辑吗？ */
   function isEditing() {
-    if ($('.inline-edit') || $('.prod-detail')) return true;
+    // 只有「真的还开着的编辑框」才算，已经 remove 的不算
+    if ($('.inline-edit')) return true;
     var a = document.activeElement;
     return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
   }
@@ -2127,7 +2139,13 @@
     range.addEventListener('input', function () { val.textContent = Number(this.value).toFixed(1); });
     box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
-      addReview(id, Number(range.value), box.querySelector('textarea').value);
+      var score = Number(range.value);
+      var txt = box.querySelector('textarea').value;
+      /* 先把编辑框拆掉再保存。
+         保存里会调 refresh()，而 refresh 看到编辑框还开着就会把刷新欠下 ——
+         结果就是点了没反应，等编辑框关了才突然更新。 */
+      box.remove();
+      addReview(id, score, txt);
     });
   }
 
@@ -2159,6 +2177,7 @@
         size: box.querySelector('.b-size').value.trim() || undefined,
         where: box.querySelector('.b-where').value.trim() || undefined,
       };
+      box.remove();
       var next = allProducts().map(function (x) {
         if (x.id !== pid) return x;
         var y = Object.assign({}, x);
@@ -2225,15 +2244,17 @@
     range.addEventListener('input', function () { val.textContent = Number(this.value).toFixed(1); });
     box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
+      var patch = {
+        date: box.querySelector('.rv-date').value || r.date,
+        score: Number(range.value),
+        text: box.querySelector('textarea').value.trim() || undefined,
+      };
+      box.remove();
       var next = allProducts().map(function (x) {
         if (x.id !== pid) return x;
         var y = Object.assign({}, x);
         y.reviews = (y.reviews || []).slice();
-        y.reviews[idx] = {
-          date: box.querySelector('.rv-date').value || r.date,
-          score: Number(range.value),
-          text: box.querySelector('textarea').value.trim() || undefined,
-        };
+        y.reviews[idx] = patch;
         return y;
       });
       saveProducts(next, '产品库：修改 ' + p.name + ' 的评价')
@@ -2394,10 +2415,10 @@
         patch[inp.dataset.f] = inp.type === 'number' ? (v === '' ? undefined : Number(v))
                                                      : (v || undefined);
       });
+      box.remove();
       var next = allProducts().map(function (x) {
         return x.id === id ? Object.assign({}, x, patch) : x;
       });
-      box.remove();
       saveProducts(next, '产品库：更新 ' + (patch.name || p.name))
         .then(function () { toast('已保存'); })
         .catch(function (e) { toast('失败：' + (e.message || e), true); });

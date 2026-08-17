@@ -786,7 +786,12 @@ textarea { min-height: 64px; }
 .cat-head { font-size: 14px; letter-spacing: 1.5px; cursor: pointer; }
 .cat-head .ml-caret { margin-left: auto; }
 .cat-head.closed .ml-caret { transform: rotate(-90deg); }
-.prod-card .nm { font-size: 14px; }
+/* 产品名单行，太长就省略 —— 换行会把整列撑乱 */
+.prod-card .nm {
+  font-size: 14px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.prod-card .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .prod-card .sub { font-size: 11.5px; }
 
 /* ⑫ 产品评分与评论 */
