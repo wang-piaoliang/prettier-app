@@ -699,6 +699,7 @@
     });
     box.querySelector('.ie-ok').addEventListener('click', function () {
       var v = ta.value;
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       box.remove();
       saveDayNote(date, v);
     });
@@ -1015,6 +1016,7 @@
         note: box.querySelector('#w-note').value.trim() || undefined,
       };
       var oldDate = cur ? cur.date : null;
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       box.remove();
       saveWeight(rec, oldDate);
     });
@@ -1771,10 +1773,13 @@
      重绘会把打开的编辑框连同没保存的内容一起冲掉 —— 丢数据。
      所以自动重绘一律先问一句：现在有人在编辑吗？ */
   function isEditing() {
-    // 只有「真的还开着的编辑框」才算，已经 remove 的不算
+    // 只有「还挂在页面上的编辑框」才算
     if ($('.inline-edit')) return true;
     var a = document.activeElement;
-    return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+    if (!a || !/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return false;
+    // 焦点得在真正的编辑区域里；游离在外的输入框不该拦住刷新
+    return !!(a.closest && (a.closest('.inline-edit') || a.closest('.prod-detail') ||
+                            a.closest('#view-compose')));
   }
 
   var pendingRefresh = false;
@@ -1970,20 +1975,31 @@
     return 'skincare';
   }
 
-  /* 按使用顺序排，不再按分类堆 —— 这个顺序就是实际上脸的顺序 */
-  var ORDER = {
-    makeup: ['粉底', '遮瑕', '粉饼', '睫毛', '眼线', '眼影', '修容', '腮红', '卸妆'],
-    skincare: ['水', '乳', '精华', '面膜', '眼膜', '眼霜'],
+  /* 按使用顺序排 —— 这就是实际上脸的顺序。
+     顺序存在 settings.productOrder 里（属于个人偏好，不该写死在代码），
+     这里的默认值只是兜底。
+
+     ⚠️ 用词组不能用单字：早先写成 ['水','乳',...]，
+     结果「卸妆水」被「水」捞到第一、「身体乳」被「乳」捞到第二，全乱了。 */
+  var DEFAULT_ORDER = {
+    makeup: ['粉底|粉霜', '遮瑕', '粉饼|散粉|蜜粉|定妆', '睫毛', '眼线', '眼影',
+             '修容|腮红|高光', '卸妆'],
+    skincare: ['化妆水|爽肤|柔肤|水乳|乳液', '精华', '面膜', '眼膜', '眼霜'],
     device: [],
   };
 
+  function orderList(kind) {
+    var conf = (state.data && state.data.productOrder) || {};
+    return conf[kind] || DEFAULT_ORDER[kind] || [];
+  }
+
   function orderIndex(p) {
-    var list = ORDER[kindOf(p)] || [];
-    var hay = (p.category || '') + ' ' + p.name;
+    var list = orderList(kindOf(p));
+    var hay = (p.category || '') + ' ' + (p.name || '');
     for (var i = 0; i < list.length; i++) {
-      if (hay.indexOf(list[i]) >= 0) return i;
+      if (new RegExp(list[i]).test(hay)) return i;
     }
-    return 999;   // 没匹配上的排最后
+    return 999;   // 没匹配上的算「其他」，排最后
   }
 
   function sortProducts(rows) {
@@ -2144,6 +2160,7 @@
       /* 先把编辑框拆掉再保存。
          保存里会调 refresh()，而 refresh 看到编辑框还开着就会把刷新欠下 ——
          结果就是点了没反应，等编辑框关了才突然更新。 */
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       box.remove();
       addReview(id, score, txt);
     });
@@ -2177,6 +2194,7 @@
         size: box.querySelector('.b-size').value.trim() || undefined,
         where: box.querySelector('.b-where').value.trim() || undefined,
       };
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       box.remove();
       var next = allProducts().map(function (x) {
         if (x.id !== pid) return x;
@@ -2249,6 +2267,7 @@
         score: Number(range.value),
         text: box.querySelector('textarea').value.trim() || undefined,
       };
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       box.remove();
       var next = allProducts().map(function (x) {
         if (x.id !== pid) return x;
@@ -2415,6 +2434,10 @@
         patch[inp.dataset.f] = inp.type === 'number' ? (v === '' ? undefined : Number(v))
                                                      : (v || undefined);
       });
+      /* 先 blur 再移除。
+         只移除表单的话，activeElement 还停在那个输入框上，
+         isEditing() 判定为真，刷新就被欠下 —— 表现是「点保存没反应」。 */
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       box.remove();
       var next = allProducts().map(function (x) {
         return x.id === id ? Object.assign({}, x, patch) : x;
