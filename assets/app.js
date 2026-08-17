@@ -1078,84 +1078,101 @@
   /* 长按拖拽排序。
      只在同一段内交换：已有照片和新加的照片分属两段，
      跨段交换会让「哪些要上传、哪些已在云端」乱掉。 */
+  /* 长按拖拽排序。
+     不用 elementFromPoint 做命中测试 —— 那东西依赖页面真实渲染，
+     一旦被遮挡、被缩放、或在不可见状态下就返回 null。
+     改成在按下的那一刻把所有格子的位置量好，之后纯按坐标算落在第几格，
+     行为完全确定，也不受 .dragging 那个放大动画影响。 */
   function bindDrag(host) {
     var timer = null, from = null, moved = false;
+    var sx = 0, sy = 0, rects = null, seg = null;
 
-    function keyOf(node) { return node && node.dataset ? node.dataset.drag : null; }
-    // 每次都取当下的草稿，不要闭包住旧的 —— 草稿会被 renderCompose 换掉
+    function draft() { return state.draft || {}; }
     function listOf(k) {
-      var d = state.draft || {};
+      var d = draft();
       return k && k[0] === 'k' ? (d.keepPhotos || []) : (d.photos || []);
+    }
+
+    function measure() {
+      rects = $$('.slot', host).map(function (node) {
+        var r = node.getBoundingClientRect();
+        return { key: node.dataset.drag, cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+      });
+    }
+
+    // 找离手指最近的、同一段里的格子
+    function nearest(x, y) {
+      var best = null, bd = Infinity;
+      rects.forEach(function (r) {
+        if (!r.key || r.key[0] !== seg) return;
+        var d2 = (r.cx - x) * (r.cx - x) + (r.cy - y) * (r.cy - y);
+        if (d2 < bd) { bd = d2; best = r.key; }
+      });
+      return best;
     }
 
     function end() {
       clearTimeout(timer);
       timer = null;
       document.body.classList.remove('no-scroll');
-      if (from) {
-        var el2 = host.querySelector('[data-drag="' + from + '"]');
-        if (el2) el2.classList.remove('dragging');
-      }
-      from = null;
-      if (moved) { moved = false; drawPicker(); }
       host.classList.remove('dragmode');
+      $$('.slot.dragging', host).forEach(function (n) { n.classList.remove('dragging'); });
+      from = null;
+      rects = null;
+      if (moved) { moved = false; drawPicker(); }
     }
-
-    var sx = 0, sy = 0;
 
     host.addEventListener('touchstart', function (ev) {
       var slot = ev.target.closest('.slot');
       if (!slot || ev.target.closest('.del')) return;
-      sx = ev.touches[0].clientX; sy = ev.touches[0].clientY;
+      var t = ev.touches[0];
+      sx = t.clientX; sy = t.clientY;
       timer = setTimeout(function () {
-        from = keyOf(slot);
+        from = slot.dataset.drag;
+        seg = from[0];
+        measure();
         slot.classList.add('dragging');
         host.classList.add('dragmode');
         document.body.classList.add('no-scroll');
-        if (navigator.vibrate) navigator.vibrate(12);   // 给一点「进入拖拽」的反馈
+        if (navigator.vibrate) navigator.vibrate(12);
       }, 380);
     }, { passive: true });
 
     host.addEventListener('touchmove', function (ev) {
+      var t = ev.touches[0];
       if (!from) {
-        /* 手指按在屏幕上几乎必然有几像素抖动，一动就取消长按的话
-           根本按不出来。超过 12px 才当成「想滚页面」。 */
-        var t0 = ev.touches[0];
-        if (Math.abs(t0.clientX - sx) > 12 || Math.abs(t0.clientY - sy) > 12) {
+        // 手指按住时必然有几像素抖动，超过 12px 才当成想滚页面
+        if (Math.abs(t.clientX - sx) > 12 || Math.abs(t.clientY - sy) > 12) {
           clearTimeout(timer);
           timer = null;
         }
         return;
       }
       ev.preventDefault();
-      moved = true;
-      var t = ev.touches[0];
-      var over = document.elementFromPoint(t.clientX, t.clientY);
-      var slot = over && over.closest ? over.closest('.slot') : null;
-      var to = keyOf(slot);
+
+      var to = nearest(t.clientX, t.clientY);
       if (!to || to === from) return;
-      if (to[0] !== from[0]) return;                // 不跨段
 
       var list = listOf(from);
       var i = Number(from.slice(1)), j = Number(to.slice(1));
-      if (!list[i] || !list[j]) return;
+      if (list[i] === undefined || list[j] === undefined) return;
 
-      // 交换数据
-      var t2 = list[i]; list[i] = list[j]; list[j] = t2;
+      var tmp = list[i]; list[i] = list[j]; list[j] = tmp;
+      moved = true;
 
-      /* 只把两个格子在 DOM 里对调，不整块重绘。
-         重绘会把正在拖的那个节点换掉，手指就「掉」了 —— 之前一直换不成
-         就是因为每次移动都 drawPicker()。 */
-      var a = host.querySelector('[data-drag="' + from + '"]');
-      var b = slot;
-      if (a && b) {
+      /* 只把两个格子在 DOM 里对调，不整块重绘 ——
+         重绘会把正在拖的节点换掉，手指就「掉」了。 */
+      var A = host.querySelector('[data-drag="' + from + '"]');
+      var B = host.querySelector('[data-drag="' + to + '"]');
+      if (A && B) {
         var mark = document.createElement('span');
-        a.parentNode.insertBefore(mark, a);
-        b.parentNode.insertBefore(a, b);
-        mark.parentNode.insertBefore(b, mark);
+        A.parentNode.insertBefore(mark, A);
+        B.parentNode.insertBefore(A, B);
+        mark.parentNode.insertBefore(B, mark);
         mark.remove();
-        a.dataset.drag = to;
-        b.dataset.drag = from;
+        A.dataset.drag = to;
+        B.dataset.drag = from;
+        measure();                 // 位置变了，重新量
       }
       from = to;
     }, { passive: false });
