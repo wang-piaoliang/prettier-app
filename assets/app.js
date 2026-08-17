@@ -670,6 +670,68 @@
     });
   }
 
+  function renderMainlines() {
+    var host = $('#view-mainlines');
+    var ml = (state.data && state.data.mainlines) || [];
+    if (!ml.length) {
+      host.innerHTML = '<div class="empty">还没有主线问题。</div>';
+      return;
+    }
+
+    var card = function (m, idx) {
+      var body = [
+        m.summary ? '<div class="body">' + esc(m.summary) + '</div>' : '',
+        m.plan ? '<div class="next"><b>怎么做</b><br>' + esc(m.plan) + '</div>' : '',
+        m.watch ? '<div class="next"><b>注意</b><br>' + esc(m.watch) + '</div>' : '',
+        m.invalid ? '<div class="next"><b>无效的做法</b><br>' + esc(m.invalid) + '</div>' : '',
+      ].join('');
+
+      return '<div class="card mainline">' +
+        '<button class="ml-head" type="button" data-i="' + idx + '" aria-expanded="false">' +
+          '<span class="ml-title">' + esc(m.key) + '</span>' +
+          (m.area ? '<span class="pill">' + esc(m.area) + '</span>' : '') +
+          '<span class="ml-caret">▾</span>' +
+        '</button>' +
+        '<div class="ml-body" hidden>' + body + '</div>' +
+      '</div>';
+    };
+
+    host.innerHTML = '<div class="section-title">在跟的问题</div>' +
+      ml.map(card).join('') + procedureHTML();
+
+    if (!host.dataset.bound) {
+      host.dataset.bound = '1';
+      host.addEventListener('click', function (ev) {
+        var h = ev.target.closest('.ml-head');
+        if (!h) return;
+        var body = h.nextElementSibling;
+        var open = !body.hidden;
+        body.hidden = open;
+        h.setAttribute('aria-expanded', String(!open));
+        h.classList.toggle('open', !open);
+      });
+    }
+  }
+
+  function procedureHTML() {
+    var list = (state.data && state.data.procedures) || [];
+    if (!list.length) {
+      return '<div class="section-title">医美记录</div>' +
+        '<div class="empty">还没有记录。做过什么、什么时候做的，记在这里。</div>';
+    }
+    return '<div class="section-title">医美记录</div>' +
+      list.slice().reverse().map(function (p) {
+        return '<div class="card" style="margin-bottom:12px">' +
+          '<div class="entry-head" style="border:none;margin:0;padding:0">' +
+            '<span class="entry-date">' + fmtDate(p.date) + '</span>' +
+            '<span class="pill accent" style="margin-left:auto">' + esc(p.name) + '</span>' +
+          '</div>' +
+          (p.note ? '<div class="note" style="border:none;padding-top:8px">' +
+                    esc(p.note) + '</div>' : '') +
+        '</div>';
+      }).join('');
+  }
+
   /* ---- 记一条 ---- */
 
   function lastEntry() {
