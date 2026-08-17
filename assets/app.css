@@ -609,7 +609,7 @@ input:focus, textarea:focus, select:focus {
 
 
 /* ---------- 按天分组 ---------- */
-.day { margin-bottom: 30px; }
+.day { margin-bottom: 34px; }
 .day-head {
   display: flex; align-items: baseline; gap: 10px; width: 100%;
   padding: 0 2px 10px;
@@ -621,8 +621,8 @@ input:focus, textarea:focus, select:focus {
 .day.closed .ml-caret { transform: rotate(-90deg); }
 .day.closed .day-head { margin-bottom: 0; }
 .day-date {
-  font-family: var(--sans); font-size: 15px; letter-spacing: 1.5px;
-  color: var(--accent-ink);
+  font-family: var(--sans); font-size: 16px; font-weight: 500;
+  letter-spacing: 1.5px; color: var(--accent-ink);
 }
 .day-week { color: var(--ink-faint); font-family: var(--sans); font-size: 12px; }
 .day-count {
@@ -946,8 +946,11 @@ body.no-scroll { overflow: hidden; touch-action: none; }
 .w-form input { flex: 1; min-width: 0; }
 
 
-/* 兜底：页面永远不横向滚动 */
-html, body { max-width: 100%; overflow-x: hidden; }
+/* 兜底：页面永远不横向滚动。
+   ⚠️ 必须用 clip 不能用 hidden —— overflow-x: hidden 会把祖先变成滚动容器，
+   直接废掉子元素的 position: sticky（日期栏就是这么不吸顶的）。
+   clip 只裁剪、不产生滚动容器，sticky 照常工作。 */
+html, body { max-width: 100%; overflow-x: clip; }
 .inline-edit, .prod-detail { max-width: 100%; }
 
 
@@ -981,10 +984,18 @@ html, body { max-width: 100%; overflow-x: hidden; }
      被盖住的那半条点下去命中的是顶栏，表现就是「折叠按钮点不动」。 */
   top: var(--appbar-h, 96px);
   z-index: 6;
-  background: color-mix(in srgb, var(--bg) 94%, transparent);
-  backdrop-filter: saturate(1.3) blur(8px);
-  padding-top: 8px;
+
+  /* 做成一条明确的带：整块底色 + 左侧色条，滚动时始终知道在看哪一天。
+     背景必须不透明 —— 半透明的话下面的照片会透上来，字就糊了。 */
+  align-items: center;
+  margin: 0 -18px 14px;                 /* 顶到屏幕两边 */
+  padding: 11px 18px 11px 16px;
+  border: none;
+  border-left: 3px solid var(--accent);
+  background: var(--card-2);
 }
+.day.closed .day-head { margin-bottom: 22px; }
+.day + .day { margin-top: 4px; }
 
 
 /* 历史评分：每条可改可删 */
