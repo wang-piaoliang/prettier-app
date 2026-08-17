@@ -131,8 +131,6 @@
       requestAnimationFrame(function () { r.classList.remove('theme-switching'); });
     });
     set(LS.theme, t);
-    var b = $('#themeBtn');
-    if (b) b.textContent = THEME_LABEL[t];
   }
 
   function syncDot(cls, title) {
@@ -1923,8 +1921,23 @@
     });
   }
 
+  /* 绑事件前先确认元素在。
+     改版时删掉一个按钮、忘了删对应的 addEventListener，
+     就会 null.addEventListener 抛错，把后面整段 init 都带走 ——
+     表现是版本号空白、入口失踪，很难联想到根因。 */
+  function on(sel, ev, fn) {
+    var node = $(sel);
+    if (node) node.addEventListener(ev, fn);
+    else console.warn('找不到元素：' + sel);
+  }
+
   function init() {
     applyTheme(get(LS.theme, 'light'));
+
+    var av = $('#appVersion');
+    if (av && window.PRETTIER_BUILD) {
+      av.textContent = 'prettier ' + PRETTIER_BUILD.v + ' · ' + PRETTIER_BUILD.at;
+    }
 
     state.owner = get(LS.owner, '');
     state.repo = get(LS.repo, '');
@@ -1932,24 +1945,19 @@
 
     bindGate();
 
-    $('#fileInput').addEventListener('change', function () {
+    on('#fileInput', 'change', function () {
       onFilesPicked(this.files);
       this.value = '';
     });
 
-    $('.tabbar').addEventListener('click', function (ev) {
+    on('.tabbar', 'click', function (ev) {
       var b = ev.target.closest('button');
       if (b) go(b.dataset.view);
     });
 
-    $('#settingsBtn').addEventListener('click', function () { go('settings'); });
+    on('#settingsBtn', 'click', function () { go('settings'); });
 
-    $('#themeBtn').addEventListener('click', function () {
-      var cur = get(LS.theme, 'light');
-      applyTheme(THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length]);
-    });
-
-    $('#refreshBtn').addEventListener('click', function () {
+    on('#refreshBtn', 'click', function () {
       loadData().then(function () { go(state.view); toast('已刷新'); })
         .catch(function (err) { toast(String(err.message || err), true); });
     });
@@ -1964,12 +1972,6 @@
       $('#gateRepo').value = (state.owner && state.repo)
         ? state.owner + '/' + state.repo
         : 'wang-piaoliang/prettier-data';
-    }
-
-    // 页脚版本号：手机上一眼确认加载到第几版
-    var av = $('#appVersion');
-    if (av && window.PRETTIER_BUILD) {
-      av.textContent = 'prettier ' + PRETTIER_BUILD.v + ' · ' + PRETTIER_BUILD.at;
     }
 
     /* 加到主屏后是 standalone 模式，Safari 不会像普通标签页那样每次导航都
@@ -1995,7 +1997,7 @@
       });
     }
 
-    $('#prodInput').addEventListener('change', function () {
+    on('#prodInput', 'change', function () {
       scanProducts(this.files);
       this.value = '';
     });
