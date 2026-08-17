@@ -660,21 +660,16 @@
     var next = order.concat(rest);
     if (JSON.stringify(next) === JSON.stringify(e.photos)) return;
 
-    e.photos = next;      // 先本地生效
+    e.photos = next;      // 先本地生效，界面立刻是新顺序
     delete e.ai;          // 手动排过序，AI 挑的封面作废
-    toast('顺序已改');
 
-    GitStore.readJSON('entries.json').then(function (remote) {
-      var list = (remote || []).map(function (x) {
+    GitStore.updateJSON('entries.json', function (remote) {
+      return (remote || []).map(function (x) {
         return x.id === entryId ? Object.assign({}, x, { photos: next }) : x;
       });
-      return GitStore.commit(
-        [{ path: 'entries.json', text: JSON.stringify(list, null, 2) }],
-        '调整 ' + entryId + ' 的照片顺序'
-      );
-    }).then(loadData).then(function () {
-      refresh('timeline');
-    }).catch(function (err) { toast('顺序没存上：' + (err.message || err), true); });
+    }, '调整 ' + entryId + ' 的照片顺序')
+      .then(loadData).then(function () { refresh('timeline'); })
+      .catch(function (err) { toast('顺序没存上：' + (err.message || err), true); });
   }
 
   function collapseEntry(id) {
@@ -716,10 +711,11 @@
     // 先本地生效再提交，不让人对着转圈等
     if (state.data) state.data.dayNotes = notes;
     refresh('timeline');
-    GitStore.commit(
-      [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }],
-      '小结 ' + date
-    ).then(loadData).then(function () {
+    GitStore.updateJSON('settings.json', function (remote) {
+      var base = remote || {};
+      base.dayNotes = notes;
+      return base;
+    }, '小结 ' + date).then(loadData).then(function () {
       refresh('timeline');
     }).catch(function (e) { toast('小结没存上：' + (e.message || e), true); });
   }
@@ -1029,9 +1025,11 @@
     if (state.data) state.data.weights = ws;   // 先本地生效
     refresh('mainlines');
 
-    GitStore.commit(
-      [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }], message
-    ).then(loadData).then(function () {
+    GitStore.updateJSON('settings.json', function (remote) {
+      var base = remote || {};
+      base.weights = ws;
+      return base;
+    }, message).then(loadData).then(function () {
       refresh('mainlines');
     }).catch(function (e) { toast('没存上：' + (e.message || e), true); });
   }
@@ -1578,18 +1576,25 @@
     /* 提交前重新读一次云端的 entries.json，而不是用内存里的。
        两次上传排队时，第二条如果拿的是排队那一刻的旧列表，
        会把第一条刚写进去的记录覆盖掉。 */
-    return GitStore.readJSON('entries.json').then(function (remote) {
-      var entries = (remote || []).slice();
-      var at = entries.findIndex(function (x) { return x.id === job.entry.id; });
-      if (at >= 0) entries[at] = job.entry; else entries.push(job.entry);
+    /* 照片先单独传（纯新增，不会和别人冲突），
+       再用读改写把这条记录并进 entries.json —— 这样即使同时有别的写入，
+       也不会把对方刚加的记录覆盖掉。 */
+    var upload = job.files.length
+      ? GitStore.commit(job.files, job.message + '（照片）', function (t) {
+          job.step = t;
+          renderQueue();
+        })
+      : Promise.resolve();
 
-      var files = job.files.concat([
-        { path: 'entries.json', text: JSON.stringify(entries, null, 2) },
-      ]);
-      return GitStore.commit(files, job.message, function (t) {
-        job.step = t;
-        renderQueue();
-      });
+    return upload.then(function () {
+      job.step = '写入记录';
+      renderQueue();
+      return GitStore.updateJSON('entries.json', function (remote) {
+        var entries = (remote || []).slice();
+        var at = entries.findIndex(function (x) { return x.id === job.entry.id; });
+        if (at >= 0) entries[at] = job.entry; else entries.push(job.entry);
+        return entries;
+      }, job.message);
     });
   }
 
@@ -1724,18 +1729,15 @@
 
     toast('删除中…');
     // 提交前重读云端，避免把别处刚加的记录覆盖掉
-    GitStore.readJSON('entries.json').then(function (remote) {
-      var rest = (remote || []).filter(function (x) { return x.id !== id; });
-      return GitStore.commit(
-        [{ path: 'entries.json', text: JSON.stringify(rest, null, 2) }],
-        '删除记录 ' + id
-      ).then(function () {
+    GitStore.updateJSON('entries.json', function (remote) {
+      return (remote || []).filter(function (x) { return x.id !== id; });
+    }, '删除记录 ' + id)
+      .then(function () {
         // 记录先删干净，再清照片文件 —— 反过来的话中途失败会留下引用不到的记录
         return (e.photos || []).length
           ? GitStore.commitDelete(e.photos, '删除 ' + id + ' 的照片')
           : null;
-      });
-    }).then(loadData).then(function () {
+      }).then(loadData).then(function () {
       toast('已删除');
       go('timeline');
     }).catch(function (err) {
@@ -2411,12 +2413,18 @@
     if (state.data) state.data.products = list;
     refresh('products');
 
-    var files = (extraFiles || []).concat([
-      { path: 'settings.json', text: JSON.stringify(conf, null, 2) },
-    ]);
-    return GitStore.commit(files, message).then(loadData).then(function () {
-      refresh('products');
-    });
+    // 照片这类新文件只是新增，不会冲突，先单独提交
+    var pre = (extraFiles && extraFiles.length)
+      ? GitStore.commit(extraFiles, message + '（照片）')
+      : Promise.resolve();
+
+    return pre.then(function () {
+      return GitStore.updateJSON('settings.json', function (remote) {
+        var base = remote || {};
+        base.products = list;
+        return base;
+      }, message);
+    }).then(loadData).then(function () { refresh('products'); });
   }
 
   function removeProduct(id) {
@@ -2476,8 +2484,16 @@
     }).then(function (r) {
       var existing = allProducts();
       var blobsForShots = r.blobs;
-      var norm = function (b, n) { return String(b || '' + n).replace(/\s/g, '').toLowerCase(); };
-      var keyOf = function (x) { return norm(x.brand, x.name); };
+      /* 去重键只用【品名】，不掺品牌。
+         同一件东西的品牌常有多种写法（欧莱雅 / L'OREAL / LOREAL），
+         把品牌算进键里，同一件就会被当成两件；
+         而写成 b || '' + n 更糟 —— 运算符优先级让它变成 b || ('' + n)，
+         有品牌时品名根本没参与比对，于是同品牌的不同产品互相"撞车"。 */
+      var keyOf = function (x) {
+        return String(x.name || '')
+          .replace(/[\s·・\-—_（）()【】\[\]]/g, '')
+          .toLowerCase();
+      };
 
       /* 重复上传是常事。已经在库里的不重复添加，
          但如果这次认出了原来空着的字段（比如之前没认出品牌），就补上去。 */

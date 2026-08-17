@@ -324,8 +324,31 @@
     });
   }
 
+  /* 读—改—写循环。
+     光重试提交是不够的：422 说明分支已经被别人推进了，
+     而我们手里那份 JSON 是基于旧内容算出来的，硬推上去会覆盖别人刚写的。
+     必须重新拉最新的、把改动重新套一遍，再提交。
+
+     mutate(当前内容) → 新内容；返回 null 表示不需要改，直接跳过。 */
+  function updateJSON(path, mutate, message, tries) {
+    tries = tries == null ? 4 : tries;
+    return readJSON(path).then(function (cur) {
+      var next = mutate(cur);
+      if (next == null) return null;
+      return commitOnce(
+        [{ path: path, text: JSON.stringify(next, null, 2) }], message
+      );
+    }).catch(function (err) {
+      if (tries <= 0 || !/not a fast forward/i.test(err.message || '')) throw err;
+      // 退避一下再来：并发写通常是几百毫秒内的事
+      return new Promise(function (r) { setTimeout(r, 400 + Math.random() * 500); })
+        .then(function () { return updateJSON(path, mutate, message, tries - 1); });
+    });
+  }
+
   window.GitStore = {
     selftest: selftest,
+    updateJSON: updateJSON,
     configure: function (c) { Object.assign(cfg, c); },
     config: function () { return Object.assign({}, cfg, { token: cfg.token ? '***' : '' }); },
     req: req, repoPath: repoPath,
