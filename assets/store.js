@@ -53,12 +53,35 @@
       headers: headers,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     }).then(function (res) {
-      if (res.status === 401) { var e401 = new Error('令牌无效或已过期'); e401.noRetry = true; throw e401; }
-      if (res.status === 403) {
+      /* GitHub 的报文一定要带出来。
+         早先这里把 403 一律翻译成「令牌权限不足」—— 是我猜的，不是 GitHub 说的。
+         结果真出问题时（过期？限流？权限被改？）屏幕上只有一句猜测，
+         照着它去查权限根本查不出来。宁可把原文摆出来。 */
+      if (res.status === 401 || res.status === 403) {
         return res.text().then(function (t) {
-          var e = new Error(/rate limit/i.test(t)
-            ? 'GitHub 限流了，等几分钟再试'
-            : '令牌权限不足 —— 需要这个仓库的 Contents: Read and write');
+          var raw = '';
+          try { raw = (JSON.parse(t) || {}).message || ''; } catch (e2) { raw = (t || '').slice(0, 160); }
+
+          var exp = res.headers.get('github-authentication-token-expiration') || '';
+          var hint;
+          if (res.status === 401) {
+            hint = '令牌无效或已过期';
+          } else if (/secondary rate limit|abuse detection/i.test(raw)) {
+            var ra = res.headers.get('retry-after');
+            hint = '短时间写得太多，GitHub 临时限流' + (ra ? '，' + ra + ' 秒后再试' : '，等几分钟再试');
+          } else if (/rate limit/i.test(raw)) {
+            hint = 'GitHub 限流了，等几分钟再试';
+          } else if (/not accessible|not granted|permission/i.test(raw)) {
+            hint = '令牌对这个仓库没有写权限（要 Contents: Read and write）';
+          } else {
+            hint = 'GitHub 拒绝了这次请求';
+          }
+
+          var e = new Error(hint + (raw ? '\nGitHub 原话：' + raw : '') +
+                            (exp ? '\n令牌有效期至 ' + exp : ''));
+          e.status = res.status;
+          e.ghMessage = raw;
+          e.tokenExpiry = exp;
           e.noRetry = true;
           throw e;
         });
@@ -300,7 +323,18 @@
   /* 自检：分别验证「能读」和「能写」，直接指出问题出在哪 */
   function selftest() {
     var out = { read: null, write: null };
-    return req(repoPath('')).then(function (r) {
+    // 先问配额 —— 这个接口不计入限额，被限流时也答得出来
+    return fetch(API + '/rate_limit', {
+      headers: cfg.token ? { Authorization: 'Bearer ' + cfg.token } : {},
+    }).then(function (res) {
+      var exp = res.headers.get('github-authentication-token-expiration');
+      if (exp) out.tokenExpiry = exp;
+      return res.json().catch(function () { return null; });
+    }).catch(function () { return null; }).then(function (rl) {
+      var c = rl && rl.resources && rl.resources.core;
+      if (c) out.quota = c.remaining + '/' + c.limit;
+      return req(repoPath(''));
+    }).then(function (r) {
       out.repo = r.full_name;
       out.private = r.private;
       out.read = '✅ 能读';

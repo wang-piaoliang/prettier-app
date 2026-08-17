@@ -1,2 +1,2 @@
 /* 由 deploy.sh 自动生成，不要手改。 */
-window.PRETTIER_BUILD = { v: 'v34', at: '2026-08-17 16:36' };
+window.PRETTIER_BUILD = { v: 'v35', at: '2026-08-17 23:23' };

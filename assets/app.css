@@ -485,6 +485,9 @@ input:focus, textarea:focus, select:focus {
   box-shadow: var(--shadow-lg);
 }
 #toast.err { background: var(--focus); color: #fff; }
+/* GitHub 原话是多行的，不换行就只能看到第一句 */
+#toast { white-space: pre-line; }
+#diagOut { white-space: pre-line; line-height: 1.65; }
 
 /* ---------- 上传进度 ---------- */
 .progress {

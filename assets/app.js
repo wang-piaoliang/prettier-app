@@ -117,7 +117,7 @@
     t.className = isErr ? 'err' : '';
     t.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.hidden = true; }, isErr ? 4200 : 2200);
+    toastTimer = setTimeout(function () { t.hidden = true; }, isErr ? 9000 : 2200);
   }
 
   var THEMES = ['light', 'dark', 'auto'];
@@ -1931,7 +1931,9 @@
         o.innerHTML = [
           '读取：' + (r.read || '—'),
           '写入：' + (r.write || '—'),
-          r.error ? '错误：' + esc(r.error) : '',
+          r.tokenExpiry ? '令牌有效期至：' + esc(r.tokenExpiry) : '令牌有效期：未设置到期（永久）',
+          r.quota ? '本小时剩余配额：' + esc(r.quota) : '',
+          r.error ? '<b>错误：</b>' + esc(r.error) : '',
         ].filter(Boolean).join('<br>');
       });
     });
