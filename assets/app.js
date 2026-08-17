@@ -304,10 +304,13 @@
     var photos = keys.length
       ? '<div class="entry-photos n' + shown.length + '" data-id="' + esc(e.id) + '">' +
         shown.map(function (k, i) {
+          var local = e._local && e._local[keys.indexOf(k)];
           return '<button class="ph" data-idx="' + i + '" type="button">' +
-                 '<img data-key="' + esc(k) + '" alt="">' +
+                 (local
+                   ? '<img src="' + esc(local) + '" alt="">'
+                   : '<img data-key="' + esc(k) + '" alt="">') +
                  (i === shown.length - 1 && hidden > 0
-                   ? '<span class="more">+' + hidden + '</span>' : '') +
+                   ? '<span class="more-chip">+' + hidden + '</span>' : '') +
                  '</button>';
         }).join('') + '</div>'
       : '';
@@ -321,6 +324,7 @@
       pills.push('<span class="pill ' + pillLevel(e.makeup.fit) + '">妆 ' + e.makeup.fit + '</span>');
     }
     if (e.ai) pills.push('<span class="pill accent">AI</span>');
+    if (e._pending) pills.push('<span class="pill ok">上传中</span>');
 
     var tags = (e.tags || []).map(function (t) {
       return '<span class="pill accent">' + esc(t) + '</span>';
@@ -344,10 +348,16 @@
         (e.light ? '<div class="tiny" style="margin-bottom:10px">' + esc(e.light) + '</div>' : '') +
         (tags ? '<div class="meta" style="margin-bottom:10px">' + tags + '</div>' : '') +
         scoresHTML(e.scores) +
-        prod +
-        zonesHTML(e.zones) +
-        makeupHTML(e.makeup) +
-        (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
+        /* 分区观察、产品、妆容默认收起 —— 时间线要先能一眼扫过，
+           想看细节再展开 */
+        ((prod || zonesHTML(e.zones) || makeupHTML(e.makeup) || e.note)
+          ? '<button class="detail-toggle" type="button" data-detail="' + esc(e.id) + '">' +
+              '详情<span class="ml-caret">▾</span></button>' +
+            '<div class="entry-detail" id="dt-' + esc(e.id) + '" hidden>' +
+              prod + zonesHTML(e.zones) + makeupHTML(e.makeup) +
+              (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
+            '</div>'
+          : '') +
       '</div></article>';
   }
 
@@ -451,10 +461,8 @@
 
     host.innerHTML =
       '<div class="tl-bar">' +
-        '<span class="tiny">' + days.length + ' 天 · ' + list.length + ' 条</span>' +
-        '<button id="openTrend" type="button">趋势</button>' +
         '<button id="foldAll" type="button">' +
-          (allCollapsed ? '全部展开' : '全部折叠') +
+          (allCollapsed ? '展开全部' : '收起全部') +
         '</button>' +
       '</div>' +
       days.map(function (d) {
@@ -502,7 +510,7 @@
       if (ev.target.closest('#openTrend')) { go('trend'); return; }
 
       var nt = ev.target.closest('[data-note]');
-      if (nt) return editDayNote(nt.dataset.note);
+      if (nt) return openDayNoteEditor(nt.dataset.note, nt);
 
       if (ev.target.closest('#foldAll')) {
         allCollapsed = !allCollapsed;
@@ -515,6 +523,12 @@
         if (!allCollapsed) hydratePhotos(host);
         return;
       }
+      var dt = ev.target.closest('[data-detail]');
+      if (dt) {
+        var box = document.getElementById('dt-' + dt.dataset.detail);
+        if (box) { box.hidden = !box.hidden; dt.classList.toggle('open', !box.hidden); }
+        return;
+      }
       var ed = ev.target.closest('[data-edit]');
       if (ed) return editEntry(ed.dataset.edit);
       var dl = ev.target.closest('[data-del]');
@@ -522,24 +536,46 @@
     });
   }
 
-  function editDayNote(date) {
+  /* 页内编辑，不弹窗 —— 弹窗在装成 PWA 的 iOS 上又丑又难用 */
+  function openDayNoteEditor(date, anchor) {
+    if (document.getElementById('dn-edit')) return;
+    var cur = ((state.data && state.data.dayNotes) || {})[date] || '';
+    var box = el(
+      '<div class="inline-edit" id="dn-edit">' +
+        '<textarea id="dn-text" placeholder="今天的小结">' + esc(cur) + '</textarea>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">保存</button>' +
+        '</div>' +
+      '</div>'
+    );
+    anchor.replaceWith(box);
+    var ta = box.querySelector('#dn-text');
+    ta.focus();
+    box.querySelector('.ie-cancel').addEventListener('click', function () { go('timeline'); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      saveDayNote(date, ta.value);
+    });
+  }
+
+  function saveDayNote(date, value) {
     var notes = Object.assign({}, (state.data && state.data.dayNotes) || {});
-    var cur = notes[date] || '';
-    var v = prompt(fmtDate(date) + ' 的小结：', cur);
-    if (v === null) return;                    // 取消
-    v = v.trim();
+    var v = String(value || '').trim();
     if (v) notes[date] = v; else delete notes[date];
 
     var conf = Object.assign({}, state.data);
     delete conf.entries;
     conf.dayNotes = notes;
 
-    toast('保存中…');
+    // 先本地生效再提交，不让人对着转圈等
+    if (state.data) state.data.dayNotes = notes;
+    go('timeline');
     GitStore.commit(
       [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }],
       '小结 ' + date
-    ).then(loadData).then(function () { go('timeline'); toast('已保存'); })
-     .catch(function (e) { toast('失败：' + (e.message || e), true); });
+    ).then(loadData).then(function () {
+      if (state.view === 'timeline') go('timeline');
+    }).catch(function (e) { toast('小结没存上：' + (e.message || e), true); });
   }
 
   /* 趋势按【月】走，不按每条记录。
@@ -795,6 +831,14 @@
         '</div>' +
       '</div>' +
 
+      '<div class="field"><label>素颜还是带妆</label>' +
+        '<div class="segmented" id="fFace">' +
+        ['makeup', 'bare'].map(function (x) {
+          return '<button data-v="' + x + '"' + (d.face === x ? ' class="on"' : '') + '>' +
+            FACE[x] + '</button>';
+        }).join('') + '</div>' +
+      '</div>' +
+
       '<div class="field"><label>备注</label>' +
         '<textarea id="fNote" placeholder="看到什么写什么，可留空">' + esc(d.note) + '</textarea>' +
       '</div>' +
@@ -808,17 +852,9 @@
 
       /* ---- 以下折叠 ---- */
       '<button class="more-toggle" id="moreToggle" type="button" aria-expanded="false">' +
-        '更多（素颜/带妆、光线、评分、产品、标签）<span class="ml-caret">▾</span>' +
+        '更多（光线、评分、产品、标签）<span class="ml-caret">▾</span>' +
       '</button>' +
       '<div id="moreBox" hidden>' +
-
-        '<div class="field"><label>素颜还是带妆</label>' +
-          '<div class="segmented" id="fFace">' +
-          ['bare', 'makeup'].map(function (x) {
-            return '<button data-v="' + x + '"' + (d.face === x ? ' class="on"' : '') + '>' +
-              FACE[x] + '</button>';
-          }).join('') + '</div>' +
-        '</div>' +
 
         '<div class="field"><label>光线条件</label>' +
           '<input type="text" id="fLight" placeholder="比如：窗边自然光" value="' + esc(d.light) + '">' +
@@ -1050,18 +1086,21 @@
       '<button class="add" id="addPhoto"><span class="glyph">＋</span>加照片</button>' +
       (cells.length > 1 ? '<div class="tiny hint drag-tip">长按照片可以拖动排序</div>' : '');
     hydratePhotos(host);
-    bindDrag(host);
+    if (!host.dataset.dragBound) { host.dataset.dragBound = '1'; bindDrag(host); }
   }
 
   /* 长按拖拽排序。
      只在同一段内交换：已有照片和新加的照片分属两段，
      跨段交换会让「哪些要上传、哪些已在云端」乱掉。 */
   function bindDrag(host) {
-    var d = state.draft;
     var timer = null, from = null, moved = false;
 
     function keyOf(node) { return node && node.dataset ? node.dataset.drag : null; }
-    function listOf(k) { return k && k[0] === 'k' ? d.keepPhotos : d.photos; }
+    // 每次都取当下的草稿，不要闭包住旧的 —— 草稿会被 renderCompose 换掉
+    function listOf(k) {
+      var d = state.draft || {};
+      return k && k[0] === 'k' ? (d.keepPhotos || []) : (d.photos || []);
+    }
 
     function end() {
       clearTimeout(timer);
@@ -1111,6 +1150,7 @@
 
       var list = listOf(from);
       var i = Number(from.slice(1)), j = Number(to.slice(1));
+      if (!list[i] || !list[j]) return;
       var t2 = list[i]; list[i] = list[j]; list[j] = t2;
       from = to;
       drawPicker();
@@ -1202,8 +1242,10 @@
       queue.shift();
       running = false;
       renderQueue();
-      toast('已保存 ' + job.label);
-      return loadData().then(function () { if (state.view === 'timeline') go('timeline'); });
+      // 悄悄和云端对齐，不打断正在看的页面
+      return loadData().then(function () {
+        if (state.view === 'timeline') go('timeline');
+      });
     }).catch(function (err) {
       job.state = 'failed';
       job.error = (err.step ? '「' + err.step + '」' : '') + (err.message || err);
@@ -1301,6 +1343,17 @@
       entry.zones = d.zones;
     }
 
+    /* 先在本地把这条记录呈现出来，再后台提交。
+       等 GitHub 一路 blob→tree→commit→ref 走完要好几秒，
+       让人对着转圈等是没必要的 —— 数据在队列里，失败了会提示重试。 */
+    var localPhotos = d.photos.map(function (p) { return p.preview; });
+    var optimistic = Object.assign({}, entry, { _pending: true, _local: localPhotos });
+
+    var list = ((state.data && state.data.entries) || []).slice();
+    var at = list.findIndex(function (x) { return x.id === id; });
+    if (at >= 0) list[at] = optimistic; else list.push(optimistic);
+    if (state.data) state.data.entries = list;
+
     enqueue({
       entry: entry,
       files: files,
@@ -1309,10 +1362,8 @@
       state: 'queued',
     });
 
-    // 立刻放行：草稿清空、回时间线，可以马上接着记下一条
-    d.photos.forEach(function (p) { URL.revokeObjectURL(p.preview); });
+    // 预览用的 blob URL 交给时间线继续用，这里不能 revoke
     state.draft = null;
-    toast(files.length ? '后台上传中，可以继续记录' : '已加入队列');
     go('timeline');
   }
 
@@ -1612,7 +1663,9 @@
           return;
         }
         var rv = ev.target.closest('[data-review]');
-        if (rv) return addReview(rv.dataset.review);
+        if (rv) return openReviewEditor(rv.dataset.review, rv.closest('.prod-card'));
+        var dp = ev.target.closest('[data-detail-prod]');
+        if (dp) return toggleProdDetail(dp.dataset.detailProd, dp.closest('.prod-card'));
         var ex = ev.target.closest('[data-expand]');
         if (ex) {
           var box = document.getElementById('rv-' + ex.dataset.expand);
@@ -1642,9 +1695,10 @@
         (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') +
         (dates.length ? '<div class="sub">' + esc(dates.join(' · ')) + '</div>' : '') +
       '</div>' +
-      (avg != null ? '<span class="prod-score">' + avg.toFixed(1) + '</span>' : '') +
+      (avg != null ? '<span class="prod-score">' + avg.toFixed(1) + '<i>/5</i></span>' : '') +
       '<div class="act">' +
-        '<button data-review="' + esc(p.id) + '" aria-label="打分">评</button>' +
+        '<button data-detail-prod="' + esc(p.id) + '">详情</button>' +
+        '<button data-review="' + esc(p.id) + '">评分</button>' +
         (rs.length ? '<button data-expand="' + esc(p.id) + '">' + rs.length + '</button>' : '') +
         '<button data-toggle="' + esc(p.id) + '">' +
           (p.status === 'retired' ? '恢复' : '停用') + '</button>' +
@@ -1663,24 +1717,44 @@
 
   /* 同一个产品可以在不同时间反复打分 —— 用久了感受会变，
      这些变化本身就是信息，所以留全部记录，卡片上显示平均分。 */
-  function addReview(id) {
+  function openReviewEditor(id, card) {
+    if (card.querySelector('.inline-edit')) return;
+    var box = el(
+      '<div class="inline-edit">' +
+        '<div class="score-row">' +
+          '<span class="score-val">3.0</span>' +
+          '<input type="range" min="0" max="5" step="0.5" value="3">' +
+        '</div>' +
+        '<textarea placeholder="这次的感受（可留空）"></textarea>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">记下</button>' +
+        '</div>' +
+      '</div>'
+    );
+    card.appendChild(box);
+    var range = box.querySelector('input');
+    var val = box.querySelector('.score-val');
+    range.addEventListener('input', function () { val.textContent = Number(this.value).toFixed(1); });
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      addReview(id, Number(range.value), box.querySelector('textarea').value);
+    });
+  }
+
+  function addReview(id, score, txt) {
     var list = allProducts();
     var p = list.filter(function (x) { return x.id === id; })[0];
     if (!p) return;
-    var sc = prompt('给「' + p.name + '」打分（1–5，可留空只写评论）：', '');
-    if (sc === null) return;
-    var txt = prompt('这次的感受（可留空）：', '');
-    if (txt === null) return;
-    var n = Number(sc);
-    if (!sc.trim() && !txt.trim()) return;
+    txt = String(txt || '').trim();
 
     var next = list.map(function (x) {
       if (x.id !== id) return x;
       var y = Object.assign({}, x);
       y.reviews = (y.reviews || []).concat([{
         date: todayISO(),
-        score: (n >= 1 && n <= 5) ? Math.round(n) : undefined,
-        text: txt.trim() || undefined,
+        score: (score >= 0 && score <= 5) ? score : undefined,
+        text: txt || undefined,
       }]);
       return y;
     });
@@ -1689,14 +1763,83 @@
       .catch(function (e) { toast('失败：' + e.message, true); });
   }
 
+  /* 产品详情：在卡片里就地展开，所有字段直接改，不跳新页也不弹窗 */
+  var PROD_FIELDS = [
+    { k: 'name',     label: '名称',   type: 'text' },
+    { k: 'brand',    label: '品牌',   type: 'text' },
+    { k: 'category', label: '类别',   type: 'text' },
+    { k: 'price',    label: '价格',   type: 'number', unit: '元' },
+    { k: 'size',     label: '规格',   type: 'text',   ph: '如 50ml / 30g' },
+    { k: 'start',    label: '购买/开始', type: 'date' },
+    { k: 'end',      label: '停用',   type: 'date' },
+    { k: 'note',     label: '备注',   type: 'text' },
+  ];
+
+  function toggleProdDetail(id, card) {
+    var old = card.querySelector('.prod-detail');
+    if (old) { old.remove(); return; }
+
+    var p = allProducts().filter(function (x) { return x.id === id; })[0];
+    if (!p) return;
+
+    var rows = PROD_FIELDS.map(function (f) {
+      return '<label class="pd-row"><span>' + esc(f.label) + '</span>' +
+        '<input type="' + f.type + '" data-f="' + f.k + '" ' +
+        (f.ph ? 'placeholder="' + esc(f.ph) + '" ' : '') +
+        'value="' + esc(p[f.k] == null ? '' : p[f.k]) + '">' +
+        (f.unit ? '<i>' + f.unit + '</i>' : '') + '</label>';
+    }).join('');
+
+    var rs = (p.reviews || []).slice().reverse();
+    var hist = rs.length
+      ? '<div class="pd-hist"><b>历史评分</b>' +
+        rs.map(function (r) {
+          return '<div class="prod-review">' +
+            '<b>' + esc(fmtDate(r.date)) + (r.score != null ? ' · ' + r.score.toFixed(1) : '') + '</b>' +
+            '<span>' + esc(r.text || '') + '</span></div>';
+        }).join('') + '</div>'
+      : '';
+
+    var box = el('<div class="prod-detail">' + rows + hist +
+      '<div class="ie-act">' +
+        '<button class="ie-cancel" type="button">关闭</button>' +
+        '<button class="ie-ok" type="button">保存</button>' +
+      '</div></div>');
+
+    card.appendChild(box);
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var patch = {};
+      $$('[data-f]', box).forEach(function (inp) {
+        var v = inp.value.trim();
+        patch[inp.dataset.f] = inp.type === 'number' ? (v === '' ? undefined : Number(v))
+                                                     : (v || undefined);
+      });
+      var next = allProducts().map(function (x) {
+        return x.id === id ? Object.assign({}, x, patch) : x;
+      });
+      box.remove();
+      saveProducts(next, '产品库：更新 ' + (patch.name || p.name))
+        .then(function () { toast('已保存'); })
+        .catch(function (e) { toast('失败：' + (e.message || e), true); });
+    });
+  }
+
   function saveProducts(list, message) {
-    var s = Object.assign({}, state.data);
-    delete s.entries;
-    s.products = list;
+    var conf = Object.assign({}, state.data);
+    delete conf.entries;
+    conf.products = list;
+
+    // 先本地生效，界面立刻更新；提交在后面慢慢走
+    if (state.data) state.data.products = list;
+    go('products');
+
     return GitStore.commit(
-      [{ path: 'settings.json', text: JSON.stringify(s, null, 2) }],
+      [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }],
       message
-    ).then(loadData).then(function () { go('products'); });
+    ).then(loadData).then(function () {
+      if (state.view === 'products') go('products');
+    });
   }
 
   function removeProduct(id) {
@@ -1956,6 +2099,7 @@
     });
 
     on('#settingsBtn', 'click', function () { go('settings'); });
+    on('#trendBtn', 'click', function () { go('trend'); });
 
     on('#refreshBtn', 'click', function () {
       loadData().then(function () { go(state.view); toast('已刷新'); })
