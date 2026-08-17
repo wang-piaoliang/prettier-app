@@ -755,7 +755,7 @@ input:focus, textarea:focus, select:focus {
 .entry-time .slot-name { margin-right: 6px; }
 
 /* ① 编辑/删除挪到头部右侧 */
-.entry-head .entry-act { margin-left: auto; margin-top: 0; }
+.entry-head .entry-act { margin-left: auto; margin-top: 0; align-items: center; }
 
 /* ③ 每天的小结 */
 .day-note {
@@ -959,10 +959,14 @@ html, body { max-width: 100%; overflow-x: hidden; }
   font-family: var(--sans); font-size: 12.5px; color: var(--ink-soft);
   text-align: left;
 }
+/* 「收起」和右侧的删除/编辑并排，统一成同一种气质 */
 .hide-btn {
-  margin-left: auto; border: none; background: none; cursor: pointer;
-  color: var(--ink-faint); font-family: var(--sans); font-size: 12px; padding: 2px 4px;
+  height: 30px; padding: 0 8px;
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-faint); font-family: var(--sans); font-size: 12px;
+  border-radius: 8px; opacity: .55;
 }
+.hide-btn:active { background: var(--card-2); opacity: 1; }
 
 
 /* 点 +N 之后平铺：三列小图，不再是两张大图 */

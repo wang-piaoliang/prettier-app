@@ -351,11 +351,11 @@
           ? '<span class="entry-time"><span class="slot-name">' + esc(SLOT[slotOf(e)] || '') +
             '</span>' + fmtTime(e.at) + '</span>'
           : '') +
-        ((barePeek[e.id] || photoExpand[e.id])
-          ? '<button class="hide-btn" type="button" data-hide="' + esc(e.id) + '">收起</button>'
-          : '') +
         '<div class="meta">' + pills.join('') + '</div>' +
         '<div class="entry-act">' +
+          ((barePeek[e.id] || photoExpand[e.id])
+            ? '<button class="hide-btn" type="button" data-hide="' + esc(e.id) + '">收起</button>'
+            : '') +
           '<button data-del="' + esc(e.id) + '" aria-label="删除">🗑</button>' +
           '<button data-edit="' + esc(e.id) + '" aria-label="编辑">✎</button>' +
         '</div>' +
