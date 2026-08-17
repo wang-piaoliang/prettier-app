@@ -717,11 +717,13 @@
     };
 
     host.innerHTML = '<div class="section-title">在跟的问题</div>' +
-      ml.map(card).join('') + procedureHTML();
+      ml.map(card).join('') + weightHTML() + procedureHTML();
 
     if (!host.dataset.bound) {
       host.dataset.bound = '1';
       host.addEventListener('click', function (ev) {
+        var aw = ev.target.closest('#addWeight');
+        if (aw) return openWeightEditor(aw);
         var h = ev.target.closest('.ml-head');
         if (!h) return;
         var body = h.nextElementSibling;
@@ -731,6 +733,123 @@
         h.classList.toggle('open', !open);
       });
     }
+  }
+
+  /* 体重单独一区。
+     对这份档案它不是附带信息 —— 眶周脂肪垫薄是泪沟的主因，
+     而排除注射之后，增重是唯一能补回体积的途径，所以值得单独跟。 */
+  function weightHTML() {
+    var ws = ((state.data && state.data.weights) || []).slice()
+      .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    var p = (state.data && state.data.profile) || {};
+    var h = p.height;
+
+    var last = ws[ws.length - 1];
+    var first = ws[0];
+    var delta = (last && first && ws.length > 1) ? (last.kg - first.kg) : null;
+    var bmi = (last && h) ? (last.kg / Math.pow(h / 100, 2)) : null;
+
+    var chart = ws.length >= 2
+      ? weightChart(ws)
+      : '';
+
+    var rows = ws.slice().reverse().slice(0, 8).map(function (w) {
+      return '<div class="w-row"><b>' + esc(fmtDate(w.date)) + '</b>' +
+        '<span>' + w.kg.toFixed(1) + ' kg</span>' +
+        (w.note ? '<i>' + esc(w.note) + '</i>' : '') + '</div>';
+    }).join('');
+
+    return '<div class="section-title">体重</div>' +
+      '<div class="card" id="weightCard">' +
+        (last
+          ? '<div class="w-now">' +
+              '<span class="w-kg">' + last.kg.toFixed(1) + '<i>kg</i></span>' +
+              (bmi ? '<span class="pill">BMI ' + bmi.toFixed(1) + '</span>' : '') +
+              (delta != null
+                ? '<span class="pill ' + (delta > 0 ? 'good' : delta < 0 ? 'watch' : '') + '">' +
+                  (delta > 0 ? '+' : '') + delta.toFixed(1) + ' kg</span>'
+                : '') +
+              '<span class="tiny" style="margin-left:auto">' + esc(fmtDate(last.date)) + '</span>' +
+            '</div>' + chart
+          : '<div class="tiny">还没有记录。</div>') +
+        (rows ? '<div class="w-list">' + rows + '</div>' : '') +
+        '<button class="more-toggle" id="addWeight" type="button" style="margin-top:6px">' +
+          '＋ 记一次体重</button>' +
+      '</div>';
+  }
+
+  function weightChart(ws) {
+    var W = 640, H = 90, PL = 8, PR = 8, PT = 10, PB = 10;
+    var kg = ws.map(function (w) { return w.kg; });
+    var lo = Math.min.apply(null, kg), hi = Math.max.apply(null, kg);
+    if (hi - lo < 1) { lo -= 0.5; hi += 0.5; }
+    var days = function (a, b) {
+      return Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 86400000);
+    };
+    var span = days(ws[0].date, ws[ws.length - 1].date) || 1;
+    var x = function (w) { return PL + (W - PL - PR) * (days(ws[0].date, w.date) / span); };
+    var y = function (v) { return PT + (H - PT - PB) * (1 - (v - lo) / (hi - lo)); };
+
+    var d = ws.map(function (w, i) { return (i ? 'L' : 'M') + x(w) + ' ' + y(w.kg); }).join(' ');
+    var dots = ws.map(function (w) {
+      return '<circle cx="' + x(w) + '" cy="' + y(w.kg) + '" r="3" fill="var(--card)" ' +
+        'stroke="var(--accent)" stroke-width="2"><title>' +
+        esc(w.date + ' · ' + w.kg + 'kg') + '</title></circle>';
+    }).join('');
+
+    return '<svg class="w-chart" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' +
+      '<path d="' + d + '" fill="none" stroke="var(--accent)" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round"/>' + dots + '</svg>';
+  }
+
+  function openWeightEditor(anchor) {
+    if (document.getElementById('w-edit')) return;
+    var box = el(
+      '<div class="inline-edit" id="w-edit">' +
+        '<div class="w-form">' +
+          '<input type="number" id="w-kg" step="0.1" inputmode="decimal" placeholder="kg">' +
+          '<input type="date" id="w-date" value="' + todayISO() + '">' +
+        '</div>' +
+        '<input type="text" id="w-note" placeholder="备注（可留空）" style="margin-top:8px">' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">记下</button>' +
+        '</div>' +
+      '</div>'
+    );
+    anchor.replaceWith(box);
+    box.querySelector('#w-kg').focus();
+    box.querySelector('.ie-cancel').addEventListener('click', function () { go('mainlines'); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var kg = Number(box.querySelector('#w-kg').value);
+      if (!kg || kg < 20 || kg > 200) return toast('体重填一下', true);
+      saveWeight({
+        date: box.querySelector('#w-date').value || todayISO(),
+        kg: Math.round(kg * 10) / 10,
+        note: box.querySelector('#w-note').value.trim() || undefined,
+      });
+    });
+  }
+
+  function saveWeight(w) {
+    var ws = ((state.data && state.data.weights) || []).slice();
+    // 同一天只留一条，后填的覆盖先填的
+    ws = ws.filter(function (x) { return x.date !== w.date; }).concat([w]);
+    ws.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+
+    var conf = Object.assign({}, state.data);
+    delete conf.entries;
+    conf.weights = ws;
+
+    if (state.data) state.data.weights = ws;   // 先本地生效
+    go('mainlines');
+
+    GitStore.commit(
+      [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }],
+      '体重 ' + w.date + ' ' + w.kg + 'kg'
+    ).then(loadData).then(function () {
+      if (state.view === 'mainlines') go('mainlines');
+    }).catch(function (e) { toast('没存上：' + (e.message || e), true); });
   }
 
   function procedureHTML() {
@@ -1708,14 +1827,13 @@
     var rs = p.reviews || [];
 
     return '<div class="prod-card">' +
-      '<div class="pc-main">' +
+      '<div class="pc-main" data-detail-prod="' + esc(p.id) + '">' +
         '<div class="nm">' + esc(p.name) + '</div>' +
         (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') +
         (dates.length ? '<div class="sub">' + esc(dates.join(' · ')) + '</div>' : '') +
       '</div>' +
       (avg != null ? '<span class="prod-score">' + avg.toFixed(1) + '<i>/5</i></span>' : '') +
       '<div class="act">' +
-        '<button data-detail-prod="' + esc(p.id) + '" aria-label="详情">▾</button>' +
         '<button data-review="' + esc(p.id) + '">评分</button>' +
         (rs.length ? '<button data-expand="' + esc(p.id) + '">' + rs.length + '</button>' : '') +
         '<button data-toggle="' + esc(p.id) + '">' +
@@ -1741,7 +1859,7 @@
       '<div class="inline-edit">' +
         '<div class="score-row">' +
           '<span class="score-val">3.0</span>' +
-          '<input type="range" min="0" max="5" step="0.5" value="3">' +
+          '<input type="range" min="0" max="5" step="0.1" value="3">' +
         '</div>' +
         '<textarea placeholder="这次的感受（可留空）"></textarea>' +
         '<div class="ie-act">' +
@@ -1788,6 +1906,7 @@
     { k: 'category', label: '类别',   type: 'text' },
     { k: 'price',    label: '价格',   type: 'number', unit: '元' },
     { k: 'size',     label: '规格',   type: 'text',   ph: '如 50ml / 30g' },
+    { k: 'spec',     label: '成分/参数', type: 'text', ph: '如 SPF50+ PA++++' },
     { k: 'start',    label: '购买/开始', type: 'date' },
     { k: 'end',      label: '停用',   type: 'date' },
     { k: 'note',     label: '备注',   type: 'text' },
@@ -1944,10 +2063,14 @@
         var at = merged.findIndex(function (p) { return keyOf(p) === keyOf(x); });
         if (at < 0) { fresh.push(x); return; }
         var p = merged[at], add = {};
-        ['brand', 'category'].forEach(function (f) {
-          if (!p[f] && x[f]) add[f] = x[f];
+        // 只补空缺，不覆盖你已经填过的 —— 你手填的永远优先于 AI 认的
+        ['brand', 'category', 'size', 'price', 'spec', 'note'].forEach(function (f) {
+          if ((p[f] === undefined || p[f] === '') && x[f]) add[f] = x[f];
         });
-        if (Object.keys(add).length) { merged[at] = Object.assign({}, p, add); patched++; }
+        if (Object.keys(add).length) {
+          merged[at] = Object.assign({}, p, add);
+          patched++;
+        }
       });
       var dup = (r.found.products || []).length - fresh.length;
 
@@ -1964,8 +2087,11 @@
         '<div class="tiny" style="margin-bottom:8px">新认出 ' + fresh.length + ' 件' +
         (dup ? '（另有 ' + dup + ' 件已在库）' : '') + '，正在入库…</div>' +
         fresh.map(function (x) {
-          return '<div class="prow"><b>' + (x.kind === 'makeup' ? '彩妆' : '护肤') + '</b>' +
-                 '<span>' + esc([x.brand, x.name].filter(Boolean).join(' ')) + '</span></div>';
+          var extra = [x.size, x.price ? x.price + '元' : ''].filter(Boolean).join(' · ');
+          return '<div class="prow"><b>' +
+            (x.kind === 'makeup' ? '彩妆' : x.kind === 'device' ? '仪器' : '护肤') + '</b>' +
+            '<span>' + esc([x.brand, x.name].filter(Boolean).join(' ')) +
+            (extra ? '　' + esc(extra) : '') + '</span></div>';
         }).join('') + '</div>';
 
       var now = new Date().toISOString().slice(0, 10);
@@ -1973,7 +2099,9 @@
         return {
           id: 'p' + Date.now().toString(36) + i,
           name: x.name, brand: x.brand || '', kind: x.kind || 'skincare',
-          category: x.category || '', status: 'using',
+          category: x.category || '', size: x.size || undefined,
+          price: x.price, spec: x.spec || undefined, note: x.note || undefined,
+          status: 'using',
           start: now, addedAt: now,     // 没有购买日期就用入库这天
         };
       });

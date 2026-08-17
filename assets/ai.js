@@ -256,20 +256,31 @@
       });
   }
 
-  /* 认产品：拍瓶身/包装，识别品牌和品名 */
+  /* 认产品：拍瓶身/包装。
+     不只认名字 —— 包装上通常还印着规格、成分、批号，价签上有价格。
+     这些字段一并抓回来，已经在库的就用它们补全空缺。 */
   function identifyProducts(blobs) {
     var prompt = [
-      '识别照片里的护肤品和彩妆产品。',
+      '识别照片里的护肤品、彩妆、美容仪器。包装上和价签上能看清的信息都提取出来。',
       '',
       '要求：',
-      '1. 只写你在包装上【真的看清了】的字。看不清品牌就把 brand 留空字符串，',
-      '   不要根据外观猜品牌 —— 猜错了会污染产品库。',
-      '2. 一张照片里有多件就都列出来。',
-      '3. kind 只能是 "skincare"（护肤）或 "makeup"（彩妆）。',
-      '4. category 用中文，例如：洁面、化妆水、精华、面霜、防晒、粉底、遮瑕、腮红、口红。',
+      '1. 只写你【真的看清了】的字。看不清就留空字符串或省略该字段 ——',
+      '   猜出来的信息会污染产品库，留空比猜有价值。',
+      '2. 一张照片里有多件就都列出来；同一件的多张照片（正面/背面/价签）合并成一条。',
+      '3. kind 只能是 "skincare"（护肤）、"makeup"（彩妆）、"device"（仪器）。',
+      '4. size 写包装上印的净含量，带单位，例如 "50ml"、"30g"、"1.7oz"。',
+      '5. price 只写数字（人民币元），看到价签或吊牌才填，没有就省略。',
       '',
       '严格输出 JSON，不要 markdown 代码块：',
-      '{"products":[{"brand":"","name":"","kind":"skincare","category":""}]}',
+      '{"products":[{',
+      '  "brand":"", "name":"", "kind":"skincare", "category":"",',
+      '  "size":"", "price":0, "spec":"", "note":""',
+      '}]}',
+      '',
+      'category 用中文：洁面、化妆水、精华、眼霜、面霜、防晒、面膜、',
+      '粉底、遮瑕、定妆、腮红、修容、高光、眉、眼影、眼线、睫毛、唇、仪器。',
+      'spec 放包装上其他值得记的（如"SPF50+ PA++++"、"含2%水杨酸"）。',
+      'note 放你不确定但觉得有用的观察。',
       '',
       '一件都没认出来就返回 {"products":[]}。',
     ].join('\n');
@@ -281,11 +292,16 @@
         out.products = (out.products || []).filter(function (p) {
           return p && p.name && String(p.name).trim();
         }).map(function (p) {
+          var n = Number(p.price);
           return {
             brand: String(p.brand || '').trim(),
             name: String(p.name).trim(),
-            kind: p.kind === 'makeup' ? 'makeup' : 'skincare',
+            kind: ['makeup', 'device'].indexOf(p.kind) >= 0 ? p.kind : 'skincare',
             category: String(p.category || '').trim(),
+            size: String(p.size || '').trim(),
+            price: (isFinite(n) && n > 0) ? n : undefined,
+            spec: String(p.spec || '').trim(),
+            note: String(p.note || '').trim(),
           };
         });
         return out;

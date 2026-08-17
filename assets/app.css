@@ -593,7 +593,7 @@ input:focus, textarea:focus, select:focus {
   border-top: 1px solid var(--line);
 }
 .prod-list .prod-card:first-child { border-top: none; }
-.prod-card .pc-main { flex: 1; min-width: 0; }
+.prod-card .pc-main { flex: 1; min-width: 0; cursor: pointer; }
 .prod-card .nm { font-size: 15px; line-height: 1.45; }
 .prod-card .sub {
   color: var(--ink-faint); font-family: var(--sans); font-size: 12px; margin-top: 1px;
@@ -897,11 +897,13 @@ body.no-scroll { overflow: hidden; touch-action: none; }
 .picker.dragmode { touch-action: none; }
 
 /* 详情开关：只留一个小箭头，不写字 */
+/* 展开箭头：和卡片内容左对齐，不居中也不占一整行的视觉重量 */
 .detail-toggle {
-  justify-content: center; width: 100%;
-  margin-top: 6px; padding: 6px 0;
-  font-size: 11px;
+  justify-content: flex-start; width: auto;
+  margin: 8px 0 0; padding: 2px 6px 2px 0;
+  font-size: 12px; color: var(--line-2);
 }
+.detail-toggle .ml-caret { transition: transform .18s ease; }
 
 /* 产品详情：只读态 */
 .pd-read { position: relative; padding-right: 30px; }
@@ -916,3 +918,22 @@ body.no-scroll { overflow: hidden; touch-action: none; }
   color: var(--ink-faint); font-size: 13px; opacity: .6;
 }
 .pd-edit-form { padding-top: 4px; }
+
+
+/* ---------- 体重 ---------- */
+.w-now { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.w-kg {
+  font-family: var(--sans); font-size: 26px; letter-spacing: -.5px; color: var(--ink);
+}
+.w-kg i { font-style: normal; font-size: 13px; margin-left: 3px; color: var(--ink-faint); }
+.w-chart { width: 100%; height: 90px; display: block; margin: 4px 0 10px; }
+.w-list { border-top: 1px dashed var(--line); padding-top: 6px; }
+.w-row {
+  display: flex; align-items: baseline; gap: 10px; padding: 4px 0;
+  font-family: var(--sans); font-size: 13px;
+}
+.w-row b { font-weight: 400; color: var(--ink-faint); font-size: 12px; flex: 0 0 76px; }
+.w-row span { color: var(--ink-soft); }
+.w-row i { font-style: normal; color: var(--ink-faint); font-size: 12px; }
+.w-form { display: flex; gap: 8px; }
+.w-form input { flex: 1; min-width: 0; }
