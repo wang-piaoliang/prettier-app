@@ -1893,7 +1893,6 @@
       (avg != null ? '<span class="prod-score">' + avg.toFixed(1) + '<i>/5</i></span>' : '') +
       '<div class="act">' +
         '<button data-review="' + esc(p.id) + '">评分</button>' +
-        (rs.length ? '<button data-expand="' + esc(p.id) + '">' + rs.length + '</button>' : '') +
         '<button data-toggle="' + esc(p.id) + '">' +
           (p.status === 'retired' ? '恢复' : '停用') + '</button>' +
         '<button data-del="' + esc(p.id) + '">删</button>' +
