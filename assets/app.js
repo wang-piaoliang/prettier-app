@@ -289,6 +289,7 @@
   }
 
   var COVER_MAX = 2;   // 时间线上最多铺开几张，其余折叠
+  var barePeek = {};   // 本次会话里点开过的素颜记录，不持久化
 
   function entryHTML(e, showTime) {
     var keys = (e.photos || []).slice();
@@ -301,8 +302,17 @@
     var shown = keys.slice(0, COVER_MAX);
     var hidden = keys.length - shown.length;
 
-    var photos = keys.length
-      ? '<div class="entry-photos n' + shown.length + '" data-id="' + esc(e.id) + '">' +
+    /* 素颜照默认收起 —— 时间线一拉全是素颜大图，
+       在外面翻的时候不合适，点一下再看。 */
+    var hideBare = e.face === 'bare' && !barePeek[e.id];
+    var photos = !keys.length
+      ? ''
+      : hideBare
+      ? '<button class="bare-cover" type="button" data-peek="' + esc(e.id) + '">' +
+          '<span class="bc-label">素颜 · ' + keys.length + ' 张</span>' +
+          '<span class="bc-hint">点开查看</span>' +
+        '</button>'
+      : '<div class="entry-photos n' + shown.length + '" data-id="' + esc(e.id) + '">' +
         shown.map(function (k, i) {
           var local = e._local && e._local[keys.indexOf(k)];
           return '<button class="ph" data-idx="' + i + '" type="button">' +
@@ -312,8 +322,7 @@
                  (i === shown.length - 1 && hidden > 0
                    ? '<span class="more-chip">+' + hidden + '</span>' : '') +
                  '</button>';
-        }).join('') + '</div>'
-      : '';
+        }).join('') + '</div>';
 
     var ov = overall(e);
     var pills = [];
@@ -508,6 +517,13 @@
       var nt = ev.target.closest('[data-note]');
       if (nt) return openDayNoteEditor(nt.dataset.note, nt);
 
+
+      var pk = ev.target.closest('[data-peek]');
+      if (pk) {
+        barePeek[pk.dataset.peek] = true;
+        go('timeline');
+        return;
+      }
 
       var dt = ev.target.closest('[data-detail]');
       if (dt) {

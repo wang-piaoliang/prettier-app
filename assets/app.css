@@ -947,3 +947,15 @@ body.no-scroll { overflow: hidden; touch-action: none; }
 /* 兜底：页面永远不横向滚动 */
 html, body { max-width: 100%; overflow-x: hidden; }
 .inline-edit, .prod-detail { max-width: 100%; }
+
+
+/* 素颜照的遮挡层 */
+.bare-cover {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 5px; width: 100%; padding: 34px 16px;
+  border: none; background: var(--card-2); cursor: pointer;
+}
+.bc-label {
+  font-family: var(--sans); font-size: 13px; letter-spacing: 1px; color: var(--ink-soft);
+}
+.bc-hint { font-family: var(--sans); font-size: 11px; color: var(--ink-faint); }
