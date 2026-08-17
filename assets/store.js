@@ -138,9 +138,186 @@
     return new Blob([arr], { type: mime || 'image/jpeg' });
   }
 
+
+  /* ================= 本地兜底 =================
+     没有令牌、或令牌被 GitHub 拒了的时候，写入不能就这么失败掉 ——
+     照片和记录是当场产生的，丢了补不回来。
+     这一层把写入落到 IndexedDB（刷新、关机、重开都还在），
+     等令牌恢复了再一次性补传上去。
+
+     对上层完全透明：app.js 照常调 commit / updateJSON，
+     区别只是提交去了本地而不是 GitHub。 */
+
+  var K_SNAP = '__snapshot';   // { json: {path: 值}, tree: {path: sha} }
+  var K_OUT  = '__outbox';     // { photos: [path], deletes: [path], dirty: [path] }
+
+  var L = { on: false, ready: false, json: {}, tree: {}, photos: [], deletes: [], dirty: [] };
+
+  function localLoad() {
+    if (L.ready) return Promise.resolve(L);
+    return Promise.all([cacheGet(K_SNAP), cacheGet(K_OUT)]).then(function (r) {
+      var snap = r[0] || {}, out = r[1] || {};
+      L.json = snap.json || {};
+      L.tree = snap.tree || {};
+      L.photos = out.photos || [];
+      L.deletes = out.deletes || [];
+      L.dirty = out.dirty || [];
+      L.ready = true;
+      return L;
+    });
+  }
+
+  function localSave() {
+    return Promise.all([
+      cachePut(K_SNAP, { json: L.json, tree: L.tree }),
+      cachePut(K_OUT, { photos: L.photos, deletes: L.deletes, dirty: L.dirty }),
+    ]);
+  }
+
+  function uniqPush(arr, v) { if (arr.indexOf(v) < 0) arr.push(v); }
+
+  /* 进入本地模式。seed 是上次同步下来的内容，用它打底，
+     这样离线时看到的仍然是完整的历史，而不是一片空白。 */
+  function goLocal(seed) {
+    L.on = true;
+    return localLoad().then(function () {
+      if (seed && !Object.keys(L.json).length) {
+        var d = seed.data || {};
+        var entries = d.entries || [];
+        var settings = Object.assign({}, d);
+        delete settings.entries;
+        L.json['settings.json'] = settings;
+        L.json['entries.json'] = entries;
+        L.tree = Object.assign({}, seed.tree || {});
+      }
+      return localSave();
+    });
+  }
+
+  /* 补传期间必须真的走网络。
+     否则 drain 里调的 commit 会被 isLocal() 拦下、又写回本地，
+     然后清空待传清单 —— 报告「已上传」，其实一个字节都没出去。 */
+  var forceRemote = false;
+
+  function isLocal() { return !forceRemote && (L.on || !cfg.token); }
+
+  // 401 / 403 —— 令牌这条路走不通了，别让数据跟着一起丢
+  function tokenBlocked(err) {
+    return err && (err.status === 401 || err.status === 403);
+  }
+
+  function localCommit(files, message) {
+    return localLoad().then(function () {
+      return files.reduce(function (chain, f) {
+        return chain.then(function () {
+          if (f.blob) {
+            var key = 'local:' + f.path;
+            L.tree[f.path] = key;          // photoURL 靠 tree 找 sha，本地也给一个
+            uniqPush(L.photos, f.path);
+            return cachePut(key, f.blob);
+          }
+          try { L.json[f.path] = JSON.parse(f.text); } catch (e) { L.json[f.path] = f.text; }
+          uniqPush(L.dirty, f.path);
+        });
+      }, Promise.resolve());
+    }).then(localSave).then(function () { return 'local'; });
+  }
+
+  function localDelete(paths) {
+    return localLoad().then(function () {
+      paths.forEach(function (p) {
+        var wasLocalOnly = L.photos.indexOf(p) >= 0;
+        L.photos = L.photos.filter(function (x) { return x !== p; });
+        delete L.tree[p];
+        // 只有云端真有这个文件才需要记一笔删除
+        if (!wasLocalOnly) uniqPush(L.deletes, p);
+      });
+      return localSave();
+    });
+  }
+
+  function pending() {
+    return { photos: L.photos.length, files: L.dirty.length, deletes: L.deletes.length,
+             total: L.photos.length + L.dirty.length + L.deletes.length, local: isLocal() };
+  }
+
+  function mergeById(remote, local) {
+    var out = (remote || []).slice();
+    (local || []).forEach(function (x) {
+      var at = out.findIndex(function (y) { return y && x && y.id === x.id; });
+      if (at >= 0) out[at] = x; else out.push(x);
+    });
+    return out;
+  }
+
+  /* 补传：把本地攒下的一次性推上去。
+     JSON 不直接覆盖 —— 先读云端再按 id 合并，
+     免得把这期间别的设备写进去的记录抹掉。 */
+  function drain(onStep) {
+    var step = function (t) { if (onStep) onStep(t); };
+    if (!cfg.token) return Promise.reject(new Error('还没有令牌'));
+
+    return localLoad().then(function () {
+      if (!L.photos.length && !L.dirty.length && !L.deletes.length) return { skipped: true };
+
+      forceRemote = true;
+      step('读取云端');
+      return Promise.all([readJSON('entries.json'), readJSON('settings.json')])
+        .then(function (r) {
+          var remoteEntries = r[0] || [], remoteSettings = r[1] || {};
+          var files = [];
+
+          step('准备照片');
+          return L.photos.reduce(function (chain, p) {
+            return chain.then(function () {
+              return cacheGet('local:' + p).then(function (b) {
+                if (b) files.push({ path: p, blob: b });
+              });
+            });
+          }, Promise.resolve()).then(function () {
+            if (L.dirty.indexOf('entries.json') >= 0) {
+              files.push({ path: 'entries.json',
+                text: JSON.stringify(mergeById(remoteEntries, L.json['entries.json']), null, 2) });
+            }
+            if (L.dirty.indexOf('settings.json') >= 0) {
+              var localS = L.json['settings.json'] || {};
+              var merged = Object.assign({}, remoteSettings, localS);
+              merged.products = mergeById(remoteSettings.products, localS.products);
+              files.push({ path: 'settings.json', text: JSON.stringify(merged, null, 2) });
+            }
+            if (!files.length) return null;
+            step('上传');
+            return commit(files, '补传离线期间的 ' + files.length + ' 个文件', function (t) { step(t); });
+          });
+        })
+        .then(function () {
+          if (!L.deletes.length) return null;
+          step('清理已删除的');
+          return commitDelete(L.deletes.slice(), '补传：删除 ' + L.deletes.length + ' 个文件');
+        })
+        .then(function () {
+          var done = { photos: L.photos.length, files: L.dirty.length, deletes: L.deletes.length };
+          L.photos = []; L.dirty = []; L.deletes = [];
+          // 快照也清掉：下次再离线时重新拿刚同步下来的内容打底，而不是这份旧的
+          L.json = {}; L.tree = {};
+          L.on = false;
+          forceRemote = false;
+          return localSave().then(function () { return done; });
+        })
+        .catch(function (err) {
+          // 失败就保持原样 —— 待传清单一项不少，下次还能重来
+          forceRemote = false;
+          // 令牌还是不行：退回本地，接着记，别让人卡在报错页上
+          if (tokenBlocked(err)) L.on = true;
+          throw err;
+        });
+    });
+  }
+
   /* ---------- 读 ---------- */
 
   function head() {
+    if (isLocal()) return localLoad().then(function () { return 'local'; });
     return req(repoPath('/git/ref/heads/' + cfg.branch)).then(function (r) {
       return r.object.sha;
     });
@@ -148,10 +325,22 @@
 
   // 一次拿到整棵树，省得为每个文件单独查 sha
   function tree(sha) {
+    if (sha === 'local') {
+      return localLoad().then(function () {
+        return { tree: Object.keys(L.tree).map(function (p) {
+          return { path: p, type: 'blob', sha: L.tree[p] };
+        }) };
+      });
+    }
     return req(repoPath('/git/trees/' + sha + '?recursive=1'));
   }
 
   function readJSON(path) {
+    if (isLocal()) {
+      return localLoad().then(function () {
+        return L.json[path] === undefined ? null : L.json[path];
+      });
+    }
     return req(repoPath('/contents/' + encodeURI(path) + '?ref=' + cfg.branch))
       .then(function (r) { return JSON.parse(b64ToUtf8(r.content)); })
       .catch(function (err) {
@@ -177,7 +366,11 @@
      这时候整个提交要基于新的 head 重做一遍，不能只重试最后那一步。 */
   function commit(files, message, onStep, tries) {
     tries = tries == null ? 3 : tries;
+    if (isLocal()) return localCommit(files, message);
     return commitOnce(files, message, onStep).catch(function (err) {
+      // 令牌不灵了就地转存本地，绝不把刚拍的照片丢掉
+      // 补传途中令牌又不行了：如实失败，待传清单原样留着，绝不能算成功
+      if (tokenBlocked(err) && !forceRemote) { L.on = true; return localCommit(files, message); }
       if (tries <= 0 || !/not a fast forward/i.test(err.message || '')) throw err;
       return new Promise(function (r) { setTimeout(r, 600); })
         .then(function () { return commit(files, message, onStep, tries - 1); });
@@ -238,7 +431,9 @@
 
   function commitDelete(paths, message, tries) {
     tries = tries == null ? 3 : tries;
+    if (isLocal()) return localDelete(paths);
     return commitDeleteOnce(paths, message).catch(function (err) {
+      if (tokenBlocked(err) && !forceRemote) { L.on = true; return localDelete(paths); }
       if (tries <= 0 || !/not a fast forward/i.test(err.message || '')) throw err;
       return new Promise(function (r) { setTimeout(r, 600); })
         .then(function () { return commitDelete(paths, message, tries - 1); });
@@ -366,6 +561,13 @@
      mutate(当前内容) → 新内容；返回 null 表示不需要改，直接跳过。 */
   function updateJSON(path, mutate, message, tries) {
     tries = tries == null ? 4 : tries;
+    if (isLocal()) {
+      return localLoad().then(function () {
+        var next = mutate(L.json[path] === undefined ? null : L.json[path]);
+        if (next == null) return null;
+        return localCommit([{ path: path, text: JSON.stringify(next, null, 2) }], message);
+      });
+    }
     return readJSON(path).then(function (cur) {
       var next = mutate(cur);
       if (next == null) return null;
@@ -373,6 +575,7 @@
         [{ path: path, text: JSON.stringify(next, null, 2) }], message
       );
     }).catch(function (err) {
+      if (tokenBlocked(err) && !forceRemote) { L.on = true; return updateJSON(path, mutate, message, 0); }
       if (tries <= 0 || !/not a fast forward/i.test(err.message || '')) throw err;
       // 退避一下再来：并发写通常是几百毫秒内的事
       return new Promise(function (r) { setTimeout(r, 400 + Math.random() * 500); })
@@ -391,5 +594,6 @@
     commit: commit, commitDelete: commitDelete,
     utf8ToB64: utf8ToB64, b64ToUtf8: b64ToUtf8, b64ToBlob: b64ToBlob,
     cacheGet: cacheGet, cachePut: cachePut, cacheClear: cacheClear,
+    goLocal: goLocal, isLocal: isLocal, pending: pending, drain: drain,
   };
 })();

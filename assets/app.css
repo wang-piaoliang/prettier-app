@@ -1043,3 +1043,33 @@ html, body { max-width: 100%; overflow-x: clip; }
 /* 体重行的改/删 */
 .w-row { align-items: center; }
 .w-row i { flex: 1; }
+
+
+/* 待上传横幅 —— 数据只在本机时必须一眼看见，
+   否则人会以为已经存到云上了。 */
+#pending {
+  position: sticky;
+  top: var(--appbar-h, 96px);
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 2px;
+  padding: 11px 18px;
+  background: #8a5a3b;
+  color: #fff;
+  font-size: 15px;
+}
+#pending[hidden] { display: none !important; }
+#pending .ptxt { flex: 1; line-height: 1.45; }
+#pending b { font-weight: 600; }
+#pending button {
+  flex: none;
+  border: 1px solid rgba(255, 255, 255, .55);
+  background: transparent;
+  color: #fff;
+  border-radius: 999px;
+  padding: 7px 15px;
+  font-size: 15px;
+}
+#pending button:disabled { opacity: .6; }

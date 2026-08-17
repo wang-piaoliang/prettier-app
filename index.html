@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
   <link rel="icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="assets/app.css?v=v35" />
+  <link rel="stylesheet" href="assets/app.css?v=v36" />
 </head>
 <body>
 
@@ -33,7 +33,7 @@
         <label>GitHub 令牌</label>
         <input type="password" id="gateToken" autocomplete="current-password"
                autocapitalize="off" autocorrect="off" spellcheck="false"
-               placeholder="github_pat_..." />
+               placeholder="github_pat_…（可留空）" />
         <div class="tiny hint">
           在 <b>Settings → Developer settings → Personal access tokens →
           Fine-grained tokens</b> 生成，只勾这一个仓库、权限给
@@ -59,6 +59,8 @@
       <button class="glyphbtn" id="foldAllBtn" type="button" aria-label="收起全部">⌄</button>
       <button class="glyphbtn" id="settingsBtn" type="button" aria-label="设置">◎</button>
     </header>
+
+    <div id="pending" hidden></div>
 
     <main>
       <section class="view active" id="view-timeline"></section>
@@ -101,10 +103,10 @@
   <div id="queue" hidden></div>
   <div id="toast" hidden></div>
 
-  <script src="assets/version.js?v=v35"></script>
-  <script src="assets/photo.js?v=v35"></script>
-  <script src="assets/ai.js?v=v35"></script>
-  <script src="assets/store.js?v=v35"></script>
-  <script src="assets/app.js?v=v35"></script>
+  <script src="assets/version.js?v=v36"></script>
+  <script src="assets/photo.js?v=v36"></script>
+  <script src="assets/ai.js?v=v36"></script>
+  <script src="assets/store.js?v=v36"></script>
+  <script src="assets/app.js?v=v36"></script>
 </body>
 </html>

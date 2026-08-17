@@ -111,6 +111,33 @@
   /* ================= 提示 / 主题 ================= */
 
   var toastTimer;
+  /* 本地存了多少还没传上去 —— 必须显眼。
+     数据只在这台手机上的时候，人得知道，不然会以为已经安全了。 */
+  function renderPending() {
+    var host = $('#pending');
+    if (!host) return;
+    var p = GitStore.pending();
+    if (!p || !p.total) { host.hidden = true; host.innerHTML = ''; return; }
+    host.hidden = false;
+    host.innerHTML =
+      '<span class="ptxt">还有 <b>' + p.total + '</b> 项只存在这台手机上' +
+      (p.photos ? '（' + p.photos + ' 张照片）' : '') + '</span>' +
+      '<button type="button" id="syncNow">' +
+      (state.token ? '立即上传' : '填令牌后上传') + '</button>';
+    $('#syncNow').addEventListener('click', function () {
+      if (!state.token) return go('settings');
+      var b = this;
+      b.disabled = true; b.textContent = '上传中…';
+      GitStore.drain(function (t) { b.textContent = t + '…'; })
+        .then(function () { return loadData(); })
+        .then(function () { toast('已全部上传'); refresh(); })
+        .catch(function (e) {
+          toast('上传失败：' + (e.message || e), true);
+          b.disabled = false; b.textContent = '重试上传';
+        });
+    });
+  }
+
   function toast(msg, isErr) {
     var t = $('#toast');
     t.textContent = msg;
@@ -144,9 +171,37 @@
     GitStore.configure({ owner: state.owner, repo: state.repo, token: state.token });
   }
 
+  function seedFromCache() {
+    try { return JSON.parse(get(LS.cache, '')) || null; } catch (e) { return null; }
+  }
+
+  /* 转本地：把上次同步下来的内容当底子，接着往下记。
+     照片和记录先落 IndexedDB，等令牌恢复了再补传。 */
+  function fallLocal(why) {
+    return GitStore.goLocal(seedFromCache()).then(function () {
+      return GitStore.head().then(GitStore.tree).then(function (t) {
+        state.tree = {};
+        (t.tree || []).forEach(function (n) { state.tree[n.path] = n.sha; });
+        return Promise.all([
+          GitStore.readJSON('settings.json'),
+          GitStore.readJSON('entries.json'),
+        ]);
+      }).then(function (r) {
+        var settings = r[0] || {};
+        settings.entries = r[1] || [];
+        state.data = settings;
+        syncDot('off', why || '本地模式');
+        renderPending();
+        return settings;
+      });
+    });
+  }
+
   function loadData() {
     syncDot('busy', '同步中');
     configureStore();
+
+    if (!state.token) return fallLocal('本地模式 · 还没填令牌');
 
     // 一次拿整棵树，顺带得到每张照片的 blob sha，省掉逐个文件查询
     return GitStore.head()
@@ -167,9 +222,14 @@
         state.data = settings;
         set(LS.cache, JSON.stringify({ data: settings, tree: state.tree }));
         syncDot('', '已同步');
+        renderPending();
         return settings;
       })
       .catch(function (err) {
+        // 令牌不灵了：转本地接着用，别把人挡在门外
+        if (err.status === 401 || err.status === 403) {
+          return fallLocal('本地模式 · 令牌暂时不可用');
+        }
         // 断网就退回上次拉到的内容，但要如实说明看到的是旧数据
         var cached = get(LS.cache, '');
         if (cached && !state.data) {
@@ -1574,6 +1634,7 @@
       queue.shift();
       running = false;
       renderQueue();
+      renderPending();
       // 悄悄和云端对齐，不打断正在看的页面
       return loadData().then(function () { refresh('timeline'); });
     }).catch(function (err) {
@@ -1875,7 +1936,25 @@
       '<div class="section-title">云端</div>' +
       '<div class="card">' +
         '<div class="kv-line"><b>仓库</b><span>' + esc(state.owner + '/' + state.repo) + '</span></div>' +
-        '<button class="btn ghost" id="diagBtn" type="button" style="margin-top:14px">' +
+        '<div class="kv-line"><b>状态</b><span>' +
+          (GitStore.isLocal()
+            ? '本地模式 · ' + GitStore.pending().total + ' 项待上传'
+            : '已连云端') + '</span></div>' +
+
+        '<div class="field" style="margin:16px 0 0">' +
+          '<label>GitHub 令牌</label>' +
+          '<div class="key-row">' +
+            '<input type="password" id="ghToken" autocomplete="off" autocapitalize="off" ' +
+              'autocorrect="off" spellcheck="false" placeholder="github_pat_… 或 ghp_…" ' +
+              'value="' + esc(state.token) + '">' +
+            '<button id="ghEye" type="button">显示</button>' +
+          '</div>' +
+          '<div class="tiny hint">留空 = 本地模式，记的东西只存在这台设备上。' +
+            '换新令牌填进来，本地攒下的会自动补传。</div>' +
+        '</div>' +
+        '<button class="btn" id="ghSave" type="button" style="margin-top:14px">保存令牌并上传</button>' +
+
+        '<button class="btn ghost" id="diagBtn" type="button" style="margin-top:10px">' +
           '检查读写权限' +
         '</button>' +
         '<div class="tiny" id="diagOut" style="margin-top:10px"></div>' +
@@ -1922,6 +2001,39 @@
           .then(function () { out.innerHTML = '✅ 可用（' + esc(PrettierAI.modelName()) + '）'; })
           .catch(function (e) { out.innerHTML = '❌ ' + esc(e.message || e); });
       }, 'image/jpeg');
+    });
+
+    $('#ghEye', host).addEventListener('click', function () {
+      var f = $('#ghToken', host);
+      var show = f.type === 'password';
+      f.type = show ? 'text' : 'password';
+      this.textContent = show ? '隐藏' : '显示';
+    });
+
+    $('#ghSave', host).addEventListener('click', function () {
+      var b = this;
+      var t = $('#ghToken', host).value.trim();
+      state.token = t;
+      set(LS.token, t);
+      configureStore();
+      if (!t) { toast('已切到本地模式'); return renderSettings(); }
+
+      b.disabled = true; b.textContent = '检查令牌…';
+      // 先确认这个令牌真能写，再补传 —— 免得半路失败留下一半
+      GitStore.selftest().then(function (r) {
+        if (r.error) throw new Error(r.error);
+        b.textContent = '上传中…';
+        return GitStore.drain(function (s) { b.textContent = s + '…'; });
+      }).then(function () {
+        return loadData();
+      }).then(function () {
+        toast('令牌可用，本地内容已上传');
+        renderSettings();
+        renderPending();
+      }).catch(function (e) {
+        toast(String(e.message || e), true);
+        b.disabled = false; b.textContent = '保存令牌并上传';
+      });
     });
 
     $('#diagBtn', host).addEventListener('click', function () {
@@ -2725,15 +2837,14 @@
       if (parts.length !== 2 || !parts[0] || !parts[1]) {
         return toast('仓库要写成 用户名/仓库名', true);
       }
-      if (!token) return toast('要填令牌', true);
 
       var btn = $('#gateBtn');
       btn.disabled = true;
-      btn.textContent = '连接中…';
+      btn.textContent = token ? '连接中…' : '进入本地模式…';
 
       state.owner = parts[0];
       state.repo = parts[1];
-      state.token = token;
+      state.token = token;   // 可以为空：空令牌 = 本地模式，记的东西存在这台设备上
 
       loadData().then(function () {
         set(LS.owner, state.owner);
@@ -2819,7 +2930,7 @@
     // 灯箱：点开后可左右滑动看同一条记录里的全部照片
     bindLightbox();
 
-    if (state.owner && state.repo && state.token) {
+    if (state.owner && state.repo) {
       showApp();
     } else {
       $('#gate').hidden = false;
