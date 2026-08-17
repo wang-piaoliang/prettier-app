@@ -351,8 +351,8 @@
         /* 分区观察、产品、妆容默认收起 —— 时间线要先能一眼扫过，
            想看细节再展开 */
         ((prod || zonesHTML(e.zones) || makeupHTML(e.makeup) || e.note)
-          ? '<button class="detail-toggle" type="button" data-detail="' + esc(e.id) + '">' +
-              '详情<span class="ml-caret">▾</span></button>' +
+          ? '<button class="detail-toggle" type="button" data-detail="' + esc(e.id) + '"' +
+              ' aria-label="展开详情"><span class="ml-caret">▾</span></button>' +
             '<div class="entry-detail" id="dt-' + esc(e.id) + '" hidden>' +
               prod + zonesHTML(e.zones) + makeupHTML(e.makeup) +
               (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
@@ -460,11 +460,7 @@
     var notes = (state.data && state.data.dayNotes) || {};
 
     host.innerHTML =
-      '<div class="tl-bar">' +
-        '<button id="foldAll" type="button">' +
-          (allCollapsed ? '展开全部' : '收起全部') +
-        '</button>' +
-      '</div>' +
+
       days.map(function (d) {
         var closed = collapsedDays[d.date];
         var n = d.rows.length;
@@ -512,17 +508,7 @@
       var nt = ev.target.closest('[data-note]');
       if (nt) return openDayNoteEditor(nt.dataset.note, nt);
 
-      if (ev.target.closest('#foldAll')) {
-        allCollapsed = !allCollapsed;
-        $$('.day', host).forEach(function (sec) {
-          collapsedDays[sec.dataset.date] = allCollapsed;
-          sec.classList.toggle('closed', allCollapsed);
-          sec.querySelector('.day-body').hidden = allCollapsed;
-        });
-        $('#foldAll', host).textContent = allCollapsed ? '全部展开' : '全部折叠';
-        if (!allCollapsed) hydratePhotos(host);
-        return;
-      }
+
       var dt = ev.target.closest('[data-detail]');
       if (dt) {
         var box = document.getElementById('dt-' + dt.dataset.detail);
@@ -1073,11 +1059,11 @@
     // 而且在手机上跟点击删除很容易误触
     var cells = keep.map(function (p, i) {
       return '<div class="slot" data-drag="k' + i + '">' +
-        '<img data-key="' + esc(p) + '" alt="">' +
+        '<img data-key="' + esc(p) + '" alt="" draggable="false">' +
         '<button class="del" data-kdel="' + i + '" aria-label="删除">×</button></div>';
     }).concat(d.photos.map(function (p, i) {
       return '<div class="slot new" data-drag="n' + i + '">' +
-        '<img src="' + p.preview + '" alt="">' +
+        '<img src="' + p.preview + '" alt="" draggable="false">' +
         '<button class="del" data-i="' + i + '" aria-label="删除">×</button>' +
         '<span class="badge">新</span></div>';
     }));
@@ -1105,12 +1091,13 @@
     function end() {
       clearTimeout(timer);
       timer = null;
+      document.body.classList.remove('no-scroll');
       if (from) {
         var el2 = host.querySelector('[data-drag="' + from + '"]');
         if (el2) el2.classList.remove('dragging');
       }
       from = null;
-      moved = false;
+      if (moved) { moved = false; drawPicker(); }
       host.classList.remove('dragmode');
     }
 
@@ -1124,8 +1111,9 @@
         from = keyOf(slot);
         slot.classList.add('dragging');
         host.classList.add('dragmode');
+        document.body.classList.add('no-scroll');
         if (navigator.vibrate) navigator.vibrate(12);   // 给一点「进入拖拽」的反馈
-      }, 420);
+      }, 380);
     }, { passive: true });
 
     host.addEventListener('touchmove', function (ev) {
@@ -1151,12 +1139,25 @@
       var list = listOf(from);
       var i = Number(from.slice(1)), j = Number(to.slice(1));
       if (!list[i] || !list[j]) return;
+
+      // 交换数据
       var t2 = list[i]; list[i] = list[j]; list[j] = t2;
+
+      /* 只把两个格子在 DOM 里对调，不整块重绘。
+         重绘会把正在拖的那个节点换掉，手指就「掉」了 —— 之前一直换不成
+         就是因为每次移动都 drawPicker()。 */
+      var a = host.querySelector('[data-drag="' + from + '"]');
+      var b = slot;
+      if (a && b) {
+        var mark = document.createElement('span');
+        a.parentNode.insertBefore(mark, a);
+        b.parentNode.insertBefore(a, b);
+        mark.parentNode.insertBefore(b, mark);
+        mark.remove();
+        a.dataset.drag = to;
+        b.dataset.drag = from;
+      }
       from = to;
-      drawPicker();
-      var el3 = host.querySelector('[data-drag="' + from + '"]');
-      if (el3) el3.classList.add('dragging');
-      host.classList.add('dragmode');
     }, { passive: false });
 
     host.addEventListener('touchend', end, { passive: true });
@@ -1697,7 +1698,7 @@
       '</div>' +
       (avg != null ? '<span class="prod-score">' + avg.toFixed(1) + '<i>/5</i></span>' : '') +
       '<div class="act">' +
-        '<button data-detail-prod="' + esc(p.id) + '">详情</button>' +
+        '<button data-detail-prod="' + esc(p.id) + '" aria-label="详情">▾</button>' +
         '<button data-review="' + esc(p.id) + '">评分</button>' +
         (rs.length ? '<button data-expand="' + esc(p.id) + '">' + rs.length + '</button>' : '') +
         '<button data-toggle="' + esc(p.id) + '">' +
@@ -1782,7 +1783,15 @@
     var p = allProducts().filter(function (x) { return x.id === id; })[0];
     if (!p) return;
 
-    var rows = PROD_FIELDS.map(function (f) {
+    // 默认只读，点 ✎ 才切成输入框 —— 一打开就满屏输入框太吵
+    var readRows = PROD_FIELDS.filter(function (f) {
+      return p[f.k] != null && p[f.k] !== '';
+    }).map(function (f) {
+      return '<div class="pd-row read"><span>' + esc(f.label) + '</span>' +
+        '<b>' + esc(String(p[f.k])) + (f.unit || '') + '</b></div>';
+    }).join('') || '<div class="pd-row read"><span>还没填信息</span></div>';
+
+    var editRows = PROD_FIELDS.map(function (f) {
       return '<label class="pd-row"><span>' + esc(f.label) + '</span>' +
         '<input type="' + f.type + '" data-f="' + f.k + '" ' +
         (f.ph ? 'placeholder="' + esc(f.ph) + '" ' : '') +
@@ -1800,13 +1809,22 @@
         }).join('') + '</div>'
       : '';
 
-    var box = el('<div class="prod-detail">' + rows + hist +
-      '<div class="ie-act">' +
-        '<button class="ie-cancel" type="button">关闭</button>' +
-        '<button class="ie-ok" type="button">保存</button>' +
-      '</div></div>');
+    var box = el('<div class="prod-detail">' +
+      '<div class="pd-read">' + readRows +
+        '<button class="pd-edit" type="button" aria-label="编辑">✎</button>' +
+      '</div>' +
+      '<div class="pd-edit-form" hidden>' + editRows +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">保存</button>' +
+        '</div>' +
+      '</div>' + hist + '</div>');
 
     card.appendChild(box);
+    box.querySelector('.pd-edit').addEventListener('click', function () {
+      box.querySelector('.pd-read').hidden = true;
+      box.querySelector('.pd-edit-form').hidden = false;
+    });
     box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
       var patch = {};
@@ -1898,19 +1916,31 @@
       });
     }).then(function (r) {
       var existing = allProducts();
-      var isNew = function (x) {
-        var key = (x.brand + x.name).replace(/\s/g, '').toLowerCase();
-        return !existing.some(function (p) {
-          return ((p.brand || '') + p.name).replace(/\s/g, '').toLowerCase() === key;
+      var norm = function (b, n) { return String(b || '' + n).replace(/\s/g, '').toLowerCase(); };
+      var keyOf = function (x) { return norm(x.brand, x.name); };
+
+      /* 重复上传是常事。已经在库里的不重复添加，
+         但如果这次认出了原来空着的字段（比如之前没认出品牌），就补上去。 */
+      var fresh = [], patched = 0;
+      var merged = existing.slice();
+      (r.found.products || []).forEach(function (x) {
+        var at = merged.findIndex(function (p) { return keyOf(p) === keyOf(x); });
+        if (at < 0) { fresh.push(x); return; }
+        var p = merged[at], add = {};
+        ['brand', 'category'].forEach(function (f) {
+          if (!p[f] && x[f]) add[f] = x[f];
         });
-      };
-      var fresh = (r.found.products || []).filter(isNew);
+        if (Object.keys(add).length) { merged[at] = Object.assign({}, p, add); patched++; }
+      });
       var dup = (r.found.products || []).length - fresh.length;
 
       if (!fresh.length) {
         out.innerHTML = '<div class="card" style="margin-bottom:18px"><div class="tiny">' +
-          '认出 ' + dup + ' 件，都已经在库里了，没有新增。</div></div>';
-        return;
+          '认出 ' + dup + ' 件，都已在库' +
+          (patched ? '；补全了 ' + patched + ' 件的信息' : '') + '。</div></div>';
+        return patched
+          ? saveProducts(merged, '产品库：补全 ' + patched + ' 件信息')
+          : null;
       }
 
       out.innerHTML = '<div class="card" style="margin-bottom:18px">' +
@@ -1930,7 +1960,8 @@
           start: now, addedAt: now,     // 没有购买日期就用入库这天
         };
       });
-      return saveProducts(existing.concat(added), '产品库：AI 识别新增 ' + added.length + ' 件')
+      return saveProducts(merged.concat(added), '产品库：新增 ' + added.length + ' 件' +
+        (patched ? '、补全 ' + patched + ' 件' : ''))
         .then(function () { toast('新增 ' + added.length + ' 件'); });
     }).catch(function (err) {
       out.innerHTML = '';
@@ -2100,6 +2131,17 @@
 
     on('#settingsBtn', 'click', function () { go('settings'); });
     on('#trendBtn', 'click', function () { go('trend'); });
+
+    on('#foldAllBtn', 'click', function () {
+      allCollapsed = !allCollapsed;
+      this.style.transform = allCollapsed ? 'rotate(-90deg)' : '';
+      $$('#view-timeline .day').forEach(function (sec) {
+        collapsedDays[sec.dataset.date] = allCollapsed;
+        sec.classList.toggle('closed', allCollapsed);
+        sec.querySelector('.day-body').hidden = allCollapsed;
+      });
+      if (!allCollapsed) hydratePhotos($('#view-timeline'));
+    });
 
     on('#refreshBtn', 'click', function () {
       loadData().then(function () { go(state.view); toast('已刷新'); })

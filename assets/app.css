@@ -825,12 +825,14 @@ textarea { min-height: 64px; }
   background: var(--card-2);
 }
 .inline-edit textarea {
-  width: 100%; min-height: 60px; background: var(--card);
+  width: 100%; min-height: 56px; background: var(--card);
+  font-family: var(--sans); font-size: 14px; line-height: 1.7;
+  padding: 10px 12px;
 }
 .ie-act { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
 .ie-act button {
-  border: none; border-radius: 10px; padding: 8px 16px; cursor: pointer;
-  font-family: var(--sans); font-size: 13px;
+  border: none; border-radius: 9px; padding: 7px 14px; cursor: pointer;
+  font-family: var(--sans); font-size: 12.5px;
 }
 .ie-cancel { background: none; color: var(--ink-faint); }
 .ie-ok { background: var(--accent-ink); color: #fff; }
@@ -838,8 +840,8 @@ textarea { min-height: 64px; }
 /* 评分滑块 */
 .score-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .score-val {
-  font-family: var(--sans); font-size: 20px; color: var(--accent-ink);
-  min-width: 46px;
+  font-family: var(--sans); font-size: 15px; color: var(--accent-ink);
+  min-width: 38px;
 }
 .score-row input[type="range"] {
   flex: 1; -webkit-appearance: none; appearance: none;
@@ -862,8 +864,9 @@ textarea { min-height: 64px; }
   flex: 0 0 72px; font-family: var(--sans); font-size: 12px; color: var(--ink-faint);
 }
 .pd-row input {
-  flex: 1; min-width: 0; padding: 8px 11px; border-radius: 10px;
-  border: 1px solid var(--line); background: var(--card); font-size: 16px;
+  flex: 1; min-width: 0; padding: 7px 10px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--card);
+  font-family: var(--sans); font-size: 16px;   /* iOS 低于 16 会自动放大页面 */
 }
 .pd-row i { font-style: normal; font-family: var(--sans); font-size: 12px; color: var(--ink-faint); }
 .pd-hist { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
@@ -876,3 +879,40 @@ textarea { min-height: 64px; }
 
 /* 时间线顶栏：只留一个动作，不再堆文字 */
 .tl-bar { justify-content: flex-end; padding-bottom: 12px; }
+
+
+/* 拖拽时锁住页面滚动 */
+body.no-scroll { overflow: hidden; touch-action: none; }
+
+/* iOS 长按图片会被系统接管（弹出分享/拖拽），必须全部关掉，
+   否则自定义的长按拖拽永远拿不到干净的手势 */
+.picker .slot,
+.picker .slot img {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.picker { touch-action: pan-y; }
+.picker.dragmode { touch-action: none; }
+
+/* 详情开关：只留一个小箭头，不写字 */
+.detail-toggle {
+  justify-content: center; width: 100%;
+  margin-top: 6px; padding: 6px 0;
+  font-size: 11px;
+}
+
+/* 产品详情：只读态 */
+.pd-read { position: relative; padding-right: 30px; }
+.pd-row.read { padding: 4px 0; }
+.pd-row.read b {
+  font-family: var(--sans); font-size: 13px; font-weight: 400; color: var(--ink-soft);
+}
+.pd-edit {
+  position: absolute; top: 0; right: 0;
+  width: 26px; height: 26px; padding: 0;
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-faint); font-size: 13px; opacity: .6;
+}
+.pd-edit-form { padding-top: 4px; }
