@@ -1764,8 +1764,20 @@
 
   function kindOf(p) {
     if (p.kind === 'device' || p.kind === 'makeup') return p.kind;
-    // 仪器以前被归进护肤，按分类名认出来
-    if (/仪|灯|device|LED/i.test((p.category || '') + p.name)) return 'device';
+    var hay = (p.category || '') + ' ' + (p.name || '');
+
+    /* 顺序很重要：先认明确的护肤/彩妆品类，最后才轮到「仪」这种模糊词。
+       反过来的话「面膜仪」「导入仪面膜」里的「仪」会把面膜误判成仪器。 */
+    if (/面膜|眼膜|洁面|化妆水|爽肤|乳液|精华|眼霜|面霜|防晒|卸妆|磨砂|喷雾/.test(hay)) {
+      return 'skincare';
+    }
+    if (/粉底|遮瑕|粉饼|散粉|定妆|腮红|修容|高光|眉|眼影|眼线|睫毛|口红|唇/.test(hay)) {
+      return 'makeup';
+    }
+    // 真正的仪器：得是独立的器械词，不能只靠一个「仪」字
+    if (/(美容仪|射频仪|导入仪|清洁仪|大排灯|LED|射频|光子|微电流)/i.test(hay)) {
+      return 'device';
+    }
     return 'skincare';
   }
 
@@ -1897,6 +1909,12 @@
           (p.status === 'retired' ? '恢复' : '停用') + '</button>' +
         '<button data-del="' + esc(p.id) + '">删</button>' +
       '</div>' +
+      ((p.photos || []).length
+        ? '<div class="pc-shots">' +
+          p.photos.slice(0, 4).map(function (path) {
+            return '<img data-key="' + esc(path) + '" alt="">';
+          }).join('') + '</div>'
+        : '') +
       (rs.length
         ? '<div class="prod-reviews" id="rv-' + esc(p.id) + '" hidden>' +
           rs.slice().reverse().map(function (r) {
@@ -1939,6 +1957,72 @@
     box.querySelector('.ie-ok').addEventListener('click', function () {
       addReview(id, Number(range.value), box.querySelector('textarea').value);
     });
+  }
+
+  function openBuyEditor(pid, anchor) {
+    if (anchor.parentNode.querySelector('.inline-edit')) return;
+    var box = el(
+      '<div class="inline-edit">' +
+        '<div class="w-form">' +
+          '<input type="date" class="b-date" value="' + todayISO() + '">' +
+          '<input type="number" class="b-price" inputmode="decimal" placeholder="价格">' +
+        '</div>' +
+        '<div class="w-form" style="margin-top:8px">' +
+          '<input type="text" class="b-size" placeholder="规格 如 50ml">' +
+          '<input type="text" class="b-where" placeholder="渠道 如 天猫">' +
+        '</div>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">记下</button>' +
+        '</div>' +
+      '</div>'
+    );
+    anchor.insertAdjacentElement('beforebegin', box);
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var price = Number(box.querySelector('.b-price').value);
+      var rec = {
+        date: box.querySelector('.b-date').value || todayISO(),
+        price: isFinite(price) && price > 0 ? price : undefined,
+        size: box.querySelector('.b-size').value.trim() || undefined,
+        where: box.querySelector('.b-where').value.trim() || undefined,
+      };
+      var next = allProducts().map(function (x) {
+        if (x.id !== pid) return x;
+        var y = Object.assign({}, x);
+        y.purchases = (y.purchases || []).concat([rec]);
+        // 第一次购买顺手当作开始使用日期
+        if (!y.start) y.start = rec.date;
+        if (!y.price && rec.price) y.price = rec.price;
+        if (!y.size && rec.size) y.size = rec.size;
+        return y;
+      });
+      saveProducts(next, '产品库：记录一次购买')
+        .then(function () { toast('已记下'); })
+        .catch(function (e) { toast('失败：' + (e.message || e), true); });
+    });
+  }
+
+  function deleteBuy(pid, idx) {
+    var p = allProducts().filter(function (x) { return x.id === pid; })[0];
+    if (!p) return;
+    var sorted = (p.purchases || []).slice().sort(function (a, b) {
+      return a.date < b.date ? 1 : -1;
+    });
+    var target = sorted[idx];
+    if (!target) return;
+    var next = allProducts().map(function (x) {
+      if (x.id !== pid) return x;
+      var y = Object.assign({}, x);
+      var hit = false;
+      y.purchases = (y.purchases || []).filter(function (b) {
+        if (!hit && b.date === target.date && b.price === target.price) { hit = true; return false; }
+        return true;
+      });
+      return y;
+    });
+    saveProducts(next, '产品库：删除一条购买记录')
+      .catch(function (e) { toast('失败：' + (e.message || e), true); });
   }
 
   function editReview(pid, idx, row) {
@@ -2061,6 +2145,26 @@
 
     /* 历史评分可改可删。用久了看法会变，早先那条写得不准就该能修，
        但索引要按【原数组】算 —— 显示是倒序的，直接用显示位置会改错人。 */
+    /* 购买记录：同一件会反复回购，价格和渠道都可能变。
+       只留一个「购买时间」字段是不够的。 */
+    var buys = (p.purchases || []).slice().sort(function (a, b) {
+      return a.date < b.date ? 1 : -1;
+    });
+    var buyHTML = '<div class="pd-hist"><b>购买记录</b>' +
+      (buys.length
+        ? buys.map(function (b, i) {
+            return '<div class="prod-review">' +
+              '<b>' + esc(fmtDate(b.date)) + '</b>' +
+              '<span>' + [b.price ? b.price + '元' : '', b.size || '', b.where || '']
+                .filter(Boolean).map(esc).join(' · ') + '</span>' +
+              '<button class="rv-edit" data-buy-del="' + i + '" aria-label="删">×</button>' +
+            '</div>';
+          }).join('')
+        : '<div class="tiny">还没有记录</div>') +
+      '<button class="more-toggle" data-buy-add="' + esc(p.id) + '" type="button" ' +
+        'style="margin-top:4px">＋ 记一次购买</button>' +
+      '</div>';
+
     var all = p.reviews || [];
     var hist = all.length
       ? '<div class="pd-hist"><b>历史评分</b>' +
@@ -2084,7 +2188,7 @@
           '<button class="ie-cancel" type="button">取消</button>' +
           '<button class="ie-ok" type="button">保存</button>' +
         '</div>' +
-      '</div>' + hist + '</div>');
+      '</div>' + buyHTML + hist + '</div>');
 
     card.appendChild(box);
     box.addEventListener('click', function (ev) {
@@ -2092,6 +2196,10 @@
       if (ed) return editReview(id, Number(ed.dataset.rvEdit), ed.closest('.prod-review'));
       var dl = ev.target.closest('[data-rv-del]');
       if (dl) return deleteReview(id, Number(dl.dataset.rvDel));
+      var ba = ev.target.closest('[data-buy-add]');
+      if (ba) return openBuyEditor(id, ba);
+      var bd = ev.target.closest('[data-buy-del]');
+      if (bd) return deleteBuy(id, Number(bd.dataset.buyDel));
     });
 
     box.querySelector('.pd-edit').addEventListener('click', function () {
@@ -2116,7 +2224,7 @@
     });
   }
 
-  function saveProducts(list, message) {
+  function saveProducts(list, message, extraFiles) {
     var conf = Object.assign({}, state.data);
     delete conf.entries;
     conf.products = list;
@@ -2125,10 +2233,10 @@
     if (state.data) state.data.products = list;
     go('products');
 
-    return GitStore.commit(
-      [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }],
-      message
-    ).then(loadData).then(function () {
+    var files = (extraFiles || []).concat([
+      { path: 'settings.json', text: JSON.stringify(conf, null, 2) },
+    ]);
+    return GitStore.commit(files, message).then(loadData).then(function () {
       if (state.view === 'products') go('products');
     });
   }
@@ -2189,12 +2297,13 @@
       });
     }).then(function (r) {
       var existing = allProducts();
+      var blobsForShots = r.blobs;
       var norm = function (b, n) { return String(b || '' + n).replace(/\s/g, '').toLowerCase(); };
       var keyOf = function (x) { return norm(x.brand, x.name); };
 
       /* 重复上传是常事。已经在库里的不重复添加，
          但如果这次认出了原来空着的字段（比如之前没认出品牌），就补上去。 */
-      var fresh = [], patched = 0;
+      var fresh = [], patched = 0, needShots = [];
       var merged = existing.slice();
       (r.found.products || []).forEach(function (x) {
         var at = merged.findIndex(function (p) { return keyOf(p) === keyOf(x); });
@@ -2208,6 +2317,7 @@
           merged[at] = Object.assign({}, p, add);
           patched++;
         }
+        needShots.push(at);   // 这次拍的图也挂到已有产品上
       });
       var dup = (r.found.products || []).length - fresh.length;
 
@@ -2215,9 +2325,13 @@
         out.innerHTML = '<div class="card" style="margin-bottom:18px"><div class="tiny">' +
           '认出 ' + dup + ' 件，都已在库' +
           (patched ? '；补全了 ' + patched + ' 件的信息' : '') + '。</div></div>';
-        return patched
-          ? saveProducts(merged, '产品库：补全 ' + patched + ' 件信息')
-          : null;
+        if (!patched && !needShots.length) return null;
+        needShots.forEach(function (idx) {
+          merged[idx] = Object.assign({}, merged[idx], {
+            photos: (merged[idx].photos || []).concat(shotPaths),
+          });
+        });
+        return saveProducts(merged, '产品库：补全 ' + patched + ' 件信息', shots);
       }
 
       out.innerHTML = '<div class="card" style="margin-bottom:18px">' +
@@ -2232,6 +2346,14 @@
         }).join('') + '</div>';
 
       var now = new Date().toISOString().slice(0, 10);
+      var stamp = Date.now().toString(36);
+      /* 把识别用的原图一起存下来 —— 万一这次漏了字段（价格、规格），
+         以后还能翻出照片重新认，不用再找实物拍一遍。 */
+      var shots = blobsForShots.map(function (b, i) {
+        return { path: 'products/' + stamp + '-' + i + '.jpg', blob: b };
+      });
+      var shotPaths = shots.map(function (f) { return f.path; });
+
       var added = fresh.map(function (x, i) {
         return {
           id: 'p' + Date.now().toString(36) + i,
@@ -2239,11 +2361,18 @@
           category: x.category || '', size: x.size || undefined,
           price: x.price, spec: x.spec || undefined, note: x.note || undefined,
           status: 'using',
+          photos: shotPaths,            // 识别用的原图，留着以后重认
           start: now, addedAt: now,     // 没有购买日期就用入库这天
         };
       });
-      return saveProducts(merged.concat(added), '产品库：新增 ' + added.length + ' 件' +
-        (patched ? '、补全 ' + patched + ' 件' : ''))
+      needShots.forEach(function (idx) {
+        merged[idx] = Object.assign({}, merged[idx], {
+          photos: (merged[idx].photos || []).concat(shotPaths),
+        });
+      });
+      return saveProducts(merged.concat(added),
+        '产品库：新增 ' + added.length + ' 件' + (patched ? '、补全 ' + patched + ' 件' : ''),
+        shots)
         .then(function () { toast('新增 ' + added.length + ' 件'); });
     }).catch(function (err) {
       out.innerHTML = '';
