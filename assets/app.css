@@ -972,8 +972,11 @@ html, body { max-width: 100%; overflow-x: hidden; }
 /* 日期那一栏吸顶，往下滑时始终知道在看哪一天 */
 .day-head {
   position: sticky;
-  top: calc(env(safe-area-inset-top) + 54px);
-  z-index: 5;
+  /* 用顶栏的实测高度，别写死。
+     写死 54px 在有灵动岛的机器上会让日期栏粘到顶栏【底下】，
+     被盖住的那半条点下去命中的是顶栏，表现就是「折叠按钮点不动」。 */
+  top: var(--appbar-h, 96px);
+  z-index: 6;
   background: color-mix(in srgb, var(--bg) 94%, transparent);
   backdrop-filter: saturate(1.3) blur(8px);
   padding-top: 8px;

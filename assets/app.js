@@ -593,12 +593,12 @@
 
     // 先本地生效再提交，不让人对着转圈等
     if (state.data) state.data.dayNotes = notes;
-    go('timeline');
+    refresh('timeline');
     GitStore.commit(
       [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }],
       '小结 ' + date
     ).then(loadData).then(function () {
-      if (state.view === 'timeline') go('timeline');
+      refresh('timeline');
     }).catch(function (e) { toast('小结没存上：' + (e.message || e), true); });
   }
 
@@ -905,12 +905,12 @@
     conf.weights = ws;
 
     if (state.data) state.data.weights = ws;   // 先本地生效
-    go('mainlines');
+    refresh('mainlines');
 
     GitStore.commit(
       [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }], message
     ).then(loadData).then(function () {
-      if (state.view === 'mainlines') go('mainlines');
+      refresh('mainlines');
     }).catch(function (e) { toast('没存上：' + (e.message || e), true); });
   }
 
@@ -1442,9 +1442,7 @@
       running = false;
       renderQueue();
       // 悄悄和云端对齐，不打断正在看的页面
-      return loadData().then(function () {
-        if (state.view === 'timeline') go('timeline');
-      });
+      return loadData().then(function () { refresh('timeline'); });
     }).catch(function (err) {
       job.state = 'failed';
       job.error = (err.step ? '「' + err.step + '」' : '') + (err.message || err);
@@ -1633,6 +1631,34 @@
     settings: renderSettings,
     mainlines: renderMainlines,
   };
+
+  /* 后台提交完成会触发重绘。如果这时候人正在填东西，
+     重绘会把打开的编辑框连同没保存的内容一起冲掉 —— 丢数据。
+     所以自动重绘一律先问一句：现在有人在编辑吗？ */
+  function isEditing() {
+    if ($('.inline-edit') || $('.prod-detail')) return true;
+    var a = document.activeElement;
+    return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+  }
+
+  var pendingRefresh = false;
+
+  // 自动重绘走这里；用户主动点的导航仍然直接用 go()
+  function refresh(view) {
+    if (isEditing()) {
+      pendingRefresh = true;      // 等编辑结束再补
+      return;
+    }
+    go(view || state.view);
+  }
+
+  // 编辑框关掉之后，把欠着的那次重绘补上
+  function flushRefresh() {
+    if (pendingRefresh && !isEditing()) {
+      pendingRefresh = false;
+      go(state.view);
+    }
+  }
 
   function go(view) {
     state.view = view;
@@ -1958,6 +1984,7 @@
   function closeInlineEditors() {
     $$('.inline-edit').forEach(function (n) { n.remove(); });
     $$('.prod-detail').forEach(function (n) { n.remove(); });
+    flushRefresh();
   }
 
   function openReviewEditor(id, card) {
@@ -2258,13 +2285,13 @@
 
     // 先本地生效，界面立刻更新；提交在后面慢慢走
     if (state.data) state.data.products = list;
-    go('products');
+    refresh('products');
 
     var files = (extraFiles || []).concat([
       { path: 'settings.json', text: JSON.stringify(conf, null, 2) },
     ]);
     return GitStore.commit(files, message).then(loadData).then(function () {
-      if (state.view === 'products') go('products');
+      refresh('products');
     });
   }
 
@@ -2545,8 +2572,22 @@
     else console.warn('找不到元素：' + sel);
   }
 
+  /* 顶栏高度随安全区变化，量出来写进 CSS 变量，
+     吸顶的日期栏就不会被它盖住 */
+  function syncAppbarHeight() {
+    var bar = $('.appbar');
+    if (!bar) return;
+    document.documentElement.style.setProperty(
+      '--appbar-h', Math.round(bar.getBoundingClientRect().height) + 'px');
+  }
+
   function init() {
     applyTheme(get(LS.theme, 'light'));
+    syncAppbarHeight();
+    window.addEventListener('resize', syncAppbarHeight);
+    window.addEventListener('orientationchange', function () {
+      setTimeout(syncAppbarHeight, 300);
+    });
 
     var av = $('#appVersion');
     if (av && window.PRETTIER_BUILD) {
@@ -2584,6 +2625,7 @@
     });
 
     on('#refreshBtn', 'click', function () {
+      if (isEditing() && !confirm('正在编辑的内容会丢失，确定刷新？')) return;
       loadData().then(function () { go(state.view); toast('已刷新'); })
         .catch(function (err) { toast(String(err.message || err), true); });
     });
