@@ -561,6 +561,128 @@
   }
 
   /* 页内编辑，不弹窗 —— 弹窗在装成 PWA 的 iOS 上又丑又难用 */
+  /* 时间线上的照片也能长按拖拽排序。
+     功能就该长在手会伸过去的位置 —— 人自然会在看到照片的地方直接拖。
+     和编辑态选择器的区别：这里改完要提交到云端，所以松手才写。 */
+  function bindTimelineDrag(host) {
+    if (host.dataset.tlDrag) return;
+    host.dataset.tlDrag = '1';
+
+    var timer = null, from = null, wrap = null, rects = null, moved = false;
+    var sx = 0, sy = 0;
+
+    function measure() {
+      rects = $$('.ph', wrap).map(function (n) {
+        var r = n.getBoundingClientRect();
+        return { idx: Number(n.dataset.idx), cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+      });
+    }
+
+    function nearest(x, y) {
+      var best = null, bd = Infinity;
+      rects.forEach(function (r) {
+        var d2 = (r.cx - x) * (r.cx - x) + (r.cy - y) * (r.cy - y);
+        if (d2 < bd) { bd = d2; best = r.idx; }
+      });
+      return best;
+    }
+
+    function end() {
+      clearTimeout(timer);
+      timer = null;
+      document.body.classList.remove('no-scroll');
+      if (wrap) wrap.classList.remove('dragmode');
+      $$('.ph.dragging', host).forEach(function (n) { n.classList.remove('dragging'); });
+      if (moved && wrap) savePhotoOrder(wrap.dataset.id);
+      from = null; wrap = null; rects = null; moved = false;
+    }
+
+    host.addEventListener('touchstart', function (ev) {
+      var ph = ev.target.closest('.entry-photos .ph');
+      if (!ph) return;
+      var t = ev.touches[0];
+      sx = t.clientX; sy = t.clientY;
+      timer = setTimeout(function () {
+        from = Number(ph.dataset.idx);
+        wrap = ph.closest('.entry-photos');
+        measure();
+        ph.classList.add('dragging');
+        wrap.classList.add('dragmode');
+        document.body.classList.add('no-scroll');
+        if (navigator.vibrate) navigator.vibrate(12);
+      }, 380);
+    }, { passive: true });
+
+    host.addEventListener('touchmove', function (ev) {
+      var t = ev.touches[0];
+      if (from === null) {
+        // 手指按住必然有微动，超过 12px 才当成想滚页面
+        if (Math.abs(t.clientX - sx) > 12 || Math.abs(t.clientY - sy) > 12) {
+          clearTimeout(timer); timer = null;
+        }
+        return;
+      }
+      ev.preventDefault();
+      var to = nearest(t.clientX, t.clientY);
+      if (to === null || to === from) return;
+
+      var A = wrap.querySelector('.ph[data-idx="' + from + '"]');
+      var B = wrap.querySelector('.ph[data-idx="' + to + '"]');
+      if (!A || !B) return;
+
+      var mark = document.createElement('span');
+      A.parentNode.insertBefore(mark, A);
+      B.parentNode.insertBefore(A, B);
+      mark.parentNode.insertBefore(B, mark);
+      mark.remove();
+      A.dataset.idx = to; B.dataset.idx = from;
+      from = to;
+      moved = true;
+      measure();
+    }, { passive: false });
+
+    host.addEventListener('touchend', end, { passive: true });
+    host.addEventListener('touchcancel', end, { passive: true });
+  }
+
+  function savePhotoOrder(entryId) {
+    var wrap = $('.entry-photos[data-id="' + entryId + '"]');
+    if (!wrap) return;
+    var order = $$('.ph img', wrap).map(function (i) { return i.dataset.key; }).filter(Boolean);
+    if (!order.length) return;
+
+    var e = ((state.data && state.data.entries) || [])
+      .filter(function (x) { return x.id === entryId; })[0];
+    if (!e) return;
+
+    // 只展开了一部分时，没露面的那些按原顺序接在后面
+    var rest = (e.photos || []).filter(function (p) { return order.indexOf(p) < 0; });
+    var next = order.concat(rest);
+    if (JSON.stringify(next) === JSON.stringify(e.photos)) return;
+
+    e.photos = next;      // 先本地生效
+    delete e.ai;          // 手动排过序，AI 挑的封面作废
+    toast('顺序已改');
+
+    GitStore.readJSON('entries.json').then(function (remote) {
+      var list = (remote || []).map(function (x) {
+        return x.id === entryId ? Object.assign({}, x, { photos: next }) : x;
+      });
+      return GitStore.commit(
+        [{ path: 'entries.json', text: JSON.stringify(list, null, 2) }],
+        '调整 ' + entryId + ' 的照片顺序'
+      );
+    }).then(loadData).then(function () {
+      refresh('timeline');
+    }).catch(function (err) { toast('顺序没存上：' + (err.message || err), true); });
+  }
+
+  function collapseEntry(id) {
+    delete barePeek[id];
+    delete photoExpand[id];
+    refresh('timeline');
+  }
+
   function openDayNoteEditor(date, anchor) {
     if (document.getElementById('dn-edit')) return;
     var cur = ((state.data && state.data.dayNotes) || {})[date] || '';
