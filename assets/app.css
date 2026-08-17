@@ -996,10 +996,11 @@ html, body { max-width: 100%; overflow-x: hidden; }
 
 
 /* 产品照片：小图挂在下面，不抢视线 */
-.pc-shots { flex: 1 0 100%; display: flex; gap: 5px; margin-top: 8px; }
+/* 识别用的原图放在详情最后，平时不占版面 */
+.pc-shots { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .pc-shots img {
-  width: 38px; height: 38px; border-radius: 7px;
-  object-fit: cover; background: var(--card-2); opacity: .8;
+  width: 52px; height: 52px; border-radius: 8px;
+  object-fit: cover; background: var(--card-2);
 }
 
 

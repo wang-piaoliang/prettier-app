@@ -1962,12 +1962,6 @@
           (p.status === 'retired' ? '恢复' : '停用') + '</button>' +
         '<button data-del="' + esc(p.id) + '">删</button>' +
       '</div>' +
-      ((p.photos || []).length
-        ? '<div class="pc-shots">' +
-          p.photos.slice(0, 4).map(function (path) {
-            return '<img data-key="' + esc(path) + '" alt="">';
-          }).join('') + '</div>'
-        : '') +
       (rs.length
         ? '<div class="prod-reviews" id="rv-' + esc(p.id) + '" hidden>' +
           rs.slice().reverse().map(function (r) {
@@ -2242,7 +2236,15 @@
           '<button class="ie-cancel" type="button">取消</button>' +
           '<button class="ie-ok" type="button">保存</button>' +
         '</div>' +
-      '</div>' + buyHTML + hist + '</div>');
+      '</div>' + buyHTML + hist +
+      ((p.photos || []).length
+        ? '<div class="pd-hist"><b>识别用的照片</b>' +
+          '<div class="pc-shots">' +
+          p.photos.map(function (path) {
+            return '<img data-key="' + esc(path) + '" alt="">';
+          }).join('') + '</div></div>'
+        : '') +
+      '</div>');
 
     card.appendChild(box);
     box.addEventListener('click', function (ev) {
