@@ -998,3 +998,21 @@ html, body { max-width: 100%; overflow-x: hidden; }
   width: 38px; height: 38px; border-radius: 7px;
   object-fit: cover; background: var(--card-2); opacity: .8;
 }
+
+
+/* 时间线照片拖拽 */
+.entry-photos .ph { transition: transform .14s ease, opacity .14s ease; }
+.entry-photos.dragmode { touch-action: none; }
+.entry-photos.dragmode .ph:not(.dragging) { opacity: .5; }
+.entry-photos .ph.dragging {
+  transform: scale(1.05); z-index: 2; position: relative;
+  box-shadow: 0 10px 24px rgba(26,22,19,.35);
+}
+.entry-photos .ph, .entry-photos img {
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* 体重行的改/删 */
+.w-row { align-items: center; }
+.w-row i { flex: 1; }

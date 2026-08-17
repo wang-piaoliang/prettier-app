@@ -320,8 +320,8 @@
           var local = e._local && e._local[keys.indexOf(k)];
           return '<button class="ph" data-idx="' + i + '" type="button">' +
                  (local
-                   ? '<img src="' + esc(local) + '" alt="">'
-                   : '<img data-key="' + esc(k) + '" alt="">') +
+                   ? '<img src="' + esc(local) + '" alt="" draggable="false">'
+                   : '<img data-key="' + esc(k) + '" alt="" draggable="false">') +
                  (i === shown.length - 1 && hidden > 0
                    ? '<span class="more-chip">+' + hidden + '</span>' : '') +
                  '</button>';
@@ -499,6 +499,7 @@
       }).join('');
 
     hydratePhotos(host);
+    bindTimelineDrag(host);
 
     if (!host.dataset.bound) {
       host.dataset.bound = '1';
@@ -528,11 +529,14 @@
       if (pk) { barePeek[pk.dataset.peek] = true; go('timeline'); return; }
 
       var hd = ev.target.closest('[data-hide]');
-      if (hd) {
-        delete barePeek[hd.dataset.hide];
-        delete photoExpand[hd.dataset.hide];
-        go('timeline');
-        return;
+      if (hd) return collapseEntry(hd.dataset.hide);
+
+      /* 展开之后，点卡片里任何「不是按钮」的地方都收起。
+         照片、编辑、删除、详情这些本来就有自己的行为，不能被抢。 */
+      var card = ev.target.closest('.entry');
+      if (card && !ev.target.closest('button') && !document.body.classList.contains('no-scroll')) {
+        var cid = card.dataset.id;
+        if (barePeek[cid] || photoExpand[cid]) return collapseEntry(cid);
       }
 
       // 点 +N 直接在页面里平铺全部，不进灯箱
@@ -758,6 +762,10 @@
       host.addEventListener('click', function (ev) {
         var aw = ev.target.closest('#addWeight');
         if (aw) return openWeightEditor(aw);
+        var we = ev.target.closest('[data-w-edit]');
+        if (we) return openWeightEditor(we.closest('.w-row'), we.dataset.wEdit);
+        var wx = ev.target.closest('[data-w-del]');
+        if (wx) return deleteWeight(wx.dataset.wDel);
         var h = ev.target.closest('.ml-head');
         if (!h) return;
         var body = h.nextElementSibling;
@@ -788,9 +796,13 @@
       : '';
 
     var rows = ws.slice().reverse().slice(0, 8).map(function (w) {
-      return '<div class="w-row"><b>' + esc(fmtDate(w.date)) + '</b>' +
+      return '<div class="w-row" data-wd="' + esc(w.date) + '">' +
+        '<b>' + esc(fmtDate(w.date)) + '</b>' +
         '<span>' + (w.kg * 2).toFixed(1) + ' 斤</span>' +
-        (w.note ? '<i>' + esc(w.note) + '</i>' : '') + '</div>';
+        (w.note ? '<i>' + esc(w.note) + '</i>' : '') +
+        '<button class="rv-edit" data-w-edit="' + esc(w.date) + '" aria-label="改">✎</button>' +
+        '<button class="rv-edit" data-w-del="' + esc(w.date) + '" aria-label="删">×</button>' +
+      '</div>';
     }).join('');
 
     return '<div class="section-title">体重</div>' +
@@ -836,15 +848,28 @@
       'stroke-linecap="round" stroke-linejoin="round"/>' + dots + '</svg>';
   }
 
-  function openWeightEditor(anchor) {
+  function deleteWeight(date) {
+    if (!confirm('删掉 ' + fmtDate(date) + ' 这条体重记录？')) return;
+    var ws = ((state.data && state.data.weights) || [])
+      .filter(function (x) { return x.date !== date; });
+    persistWeights(ws, '删除体重记录 ' + date);
+  }
+
+  function openWeightEditor(anchor, editDate) {
     if (document.getElementById('w-edit')) return;
+    var cur = editDate
+      ? ((state.data && state.data.weights) || [])
+          .filter(function (x) { return x.date === editDate; })[0]
+      : null;
     var box = el(
       '<div class="inline-edit" id="w-edit">' +
         '<div class="w-form">' +
-          '<input type="number" id="w-kg" step="0.1" inputmode="decimal" placeholder="斤">' +
-          '<input type="date" id="w-date" value="' + todayISO() + '">' +
+          '<input type="number" id="w-kg" step="0.1" inputmode="decimal" placeholder="斤"' +
+            (cur ? ' value="' + (cur.kg * 2).toFixed(1) + '"' : '') + '>' +
+          '<input type="date" id="w-date" value="' + (cur ? cur.date : todayISO()) + '">' +
         '</div>' +
-        '<input type="text" id="w-note" placeholder="备注（可留空）" style="margin-top:8px">' +
+        '<input type="text" id="w-note" placeholder="备注（可留空）" style="margin-top:8px"' +
+          (cur && cur.note ? ' value="' + esc(cur.note) + '"' : '') + '>' +
         '<div class="ie-act">' +
           '<button class="ie-cancel" type="button">取消</button>' +
           '<button class="ie-ok" type="button">记下</button>' +
@@ -862,16 +887,19 @@
         date: box.querySelector('#w-date').value || todayISO(),
         kg: Math.round((jin / 2) * 100) / 100,
         note: box.querySelector('#w-note').value.trim() || undefined,
-      });
+      }, cur ? cur.date : null);
     });
   }
 
-  function saveWeight(w) {
+  function saveWeight(w, oldDate) {
     var ws = ((state.data && state.data.weights) || []).slice();
-    // 同一天只留一条，后填的覆盖先填的
-    ws = ws.filter(function (x) { return x.date !== w.date; }).concat([w]);
+    // 同一天只留一条；改日期时把原来那条也去掉
+    ws = ws.filter(function (x) { return x.date !== w.date && x.date !== oldDate; }).concat([w]);
     ws.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+    persistWeights(ws, '体重 ' + w.date + ' ' + (w.kg * 2).toFixed(1) + '斤');
+  }
 
+  function persistWeights(ws, message) {
     var conf = Object.assign({}, state.data);
     delete conf.entries;
     conf.weights = ws;
@@ -880,8 +908,7 @@
     go('mainlines');
 
     GitStore.commit(
-      [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }],
-      '体重 ' + w.date + ' ' + (w.kg * 2).toFixed(1) + '斤'
+      [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }], message
     ).then(loadData).then(function () {
       if (state.view === 'mainlines') go('mainlines');
     }).catch(function (e) { toast('没存上：' + (e.message || e), true); });
@@ -2431,6 +2458,8 @@
     var box = $('#lightbox');
 
     document.addEventListener('click', function (ev) {
+      // +N 角标不是「看大图」，是「展开全部」，让它落到时间线自己的处理里
+      if (ev.target.closest && ev.target.closest('.more-chip')) return;
       var ph = ev.target.closest && ev.target.closest('.entry-photos .ph');
       if (ph) {
         var wrap = ph.closest('.entry-photos');
