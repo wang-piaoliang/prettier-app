@@ -1941,6 +1941,66 @@
     });
   }
 
+  function editReview(pid, idx, row) {
+    if (row.querySelector('.inline-edit')) return;
+    var p = allProducts().filter(function (x) { return x.id === pid; })[0];
+    if (!p) return;
+    var r = (p.reviews || [])[idx];
+    if (!r) return;
+
+    var box = el(
+      '<div class="inline-edit">' +
+        '<div class="score-row">' +
+          '<span class="score-val">' + (r.score != null ? r.score.toFixed(1) : '—') + '</span>' +
+          '<input type="range" min="0" max="5" step="0.1" value="' +
+            (r.score != null ? r.score : 3) + '">' +
+        '</div>' +
+        '<input type="date" class="rv-date" value="' + esc(r.date || todayISO()) + '">' +
+        '<textarea style="margin-top:8px">' + esc(r.text || '') + '</textarea>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">保存</button>' +
+        '</div>' +
+      '</div>'
+    );
+    row.appendChild(box);
+    var range = box.querySelector('input[type=range]');
+    var val = box.querySelector('.score-val');
+    range.addEventListener('input', function () { val.textContent = Number(this.value).toFixed(1); });
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var next = allProducts().map(function (x) {
+        if (x.id !== pid) return x;
+        var y = Object.assign({}, x);
+        y.reviews = (y.reviews || []).slice();
+        y.reviews[idx] = {
+          date: box.querySelector('.rv-date').value || r.date,
+          score: Number(range.value),
+          text: box.querySelector('textarea').value.trim() || undefined,
+        };
+        return y;
+      });
+      saveProducts(next, '产品库：修改 ' + p.name + ' 的评价')
+        .then(function () { toast('已更新'); })
+        .catch(function (e) { toast('失败：' + (e.message || e), true); });
+    });
+  }
+
+  function deleteReview(pid, idx) {
+    var p = allProducts().filter(function (x) { return x.id === pid; })[0];
+    if (!p || !(p.reviews || [])[idx]) return;
+    if (!confirm('删掉这条评价？')) return;
+    var next = allProducts().map(function (x) {
+      if (x.id !== pid) return x;
+      var y = Object.assign({}, x);
+      y.reviews = (y.reviews || []).filter(function (_, i) { return i !== idx; });
+      return y;
+    });
+    saveProducts(next, '产品库：删除 ' + p.name + ' 的一条评价')
+      .then(function () { toast('已删除'); })
+      .catch(function (e) { toast('失败：' + (e.message || e), true); });
+  }
+
   function addReview(id, score, txt) {
     var list = allProducts();
     var p = list.filter(function (x) { return x.id === id; })[0];
@@ -1999,13 +2059,19 @@
         (f.unit ? '<i>' + f.unit + '</i>' : '') + '</label>';
     }).join('');
 
-    var rs = (p.reviews || []).slice().reverse();
-    var hist = rs.length
+    /* 历史评分可改可删。用久了看法会变，早先那条写得不准就该能修，
+       但索引要按【原数组】算 —— 显示是倒序的，直接用显示位置会改错人。 */
+    var all = p.reviews || [];
+    var hist = all.length
       ? '<div class="pd-hist"><b>历史评分</b>' +
-        rs.map(function (r) {
-          return '<div class="prod-review">' +
+        all.map(function (r, i) { return { r: r, i: i }; }).reverse().map(function (x) {
+          var r = x.r;
+          return '<div class="prod-review" data-rv="' + x.i + '">' +
             '<b>' + esc(fmtDate(r.date)) + (r.score != null ? ' · ' + r.score.toFixed(1) : '') + '</b>' +
-            '<span>' + esc(r.text || '') + '</span></div>';
+            '<span>' + esc(r.text || '') + '</span>' +
+            '<button class="rv-edit" data-rv-edit="' + x.i + '" aria-label="改">✎</button>' +
+            '<button class="rv-edit" data-rv-del="' + x.i + '" aria-label="删">×</button>' +
+          '</div>';
         }).join('') + '</div>'
       : '';
 
@@ -2021,6 +2087,13 @@
       '</div>' + hist + '</div>');
 
     card.appendChild(box);
+    box.addEventListener('click', function (ev) {
+      var ed = ev.target.closest('[data-rv-edit]');
+      if (ed) return editReview(id, Number(ed.dataset.rvEdit), ed.closest('.prod-review'));
+      var dl = ev.target.closest('[data-rv-del]');
+      if (dl) return deleteReview(id, Number(dl.dataset.rvDel));
+    });
+
     box.querySelector('.pd-edit').addEventListener('click', function () {
       box.querySelector('.pd-read').hidden = true;
       box.querySelector('.pd-edit-form').hidden = false;

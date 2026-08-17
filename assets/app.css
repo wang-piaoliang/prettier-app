@@ -799,7 +799,7 @@ textarea { min-height: 64px; }
   flex: 1 0 100%; margin-top: 8px; padding-top: 8px;
   border-top: 1px dashed var(--line);
 }
-.prod-review { display: flex; gap: 10px; padding: 4px 0; }
+.prod-review { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; padding: 5px 0; }
 .prod-review b {
   font-family: var(--sans); font-size: 11px; font-weight: 400;
   color: var(--ink-faint); flex: 0 0 auto;
@@ -976,3 +976,15 @@ html, body { max-width: 100%; overflow-x: hidden; }
   backdrop-filter: saturate(1.3) blur(8px);
   padding-top: 8px;
 }
+
+
+/* 历史评分：每条可改可删 */
+.prod-review span { flex: 1; min-width: 0; }
+.rv-edit {
+  flex: 0 0 auto; width: 24px; height: 24px; padding: 0;
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-faint); font-size: 12px; opacity: .55;
+}
+.rv-edit:active { opacity: 1; }
+.prod-review .inline-edit { flex: 1 0 100%; }
+.rv-date { width: 100%; margin-top: 8px; }
