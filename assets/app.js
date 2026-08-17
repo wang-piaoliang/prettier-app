@@ -289,7 +289,8 @@
   }
 
   var COVER_MAX = 2;   // 时间线上最多铺开几张，其余折叠
-  var barePeek = {};   // 本次会话里点开过的素颜记录，不持久化
+  var barePeek = {};      // 本次会话里点开过的素颜记录，不持久化
+  var photoExpand = {};   // 点过 +N 平铺的记录
 
   function entryHTML(e, showTime) {
     var keys = (e.photos || []).slice();
@@ -299,7 +300,8 @@
       keys = [keys[best]].concat(keys.filter(function (_, i) { return i !== best; }));
     }
 
-    var shown = keys.slice(0, COVER_MAX);
+    var expanded = photoExpand[e.id];
+    var shown = expanded ? keys : keys.slice(0, COVER_MAX);
     var hidden = keys.length - shown.length;
 
     /* 素颜照默认收起 —— 时间线一拉全是素颜大图，
@@ -312,7 +314,8 @@
           '<span class="bc-label">素颜 · ' + keys.length + ' 张</span>' +
           '<span class="bc-hint">点开查看</span>' +
         '</button>'
-      : '<div class="entry-photos n' + shown.length + '" data-id="' + esc(e.id) + '">' +
+      : '<div class="entry-photos n' + Math.min(shown.length, 4) +
+        (expanded ? ' grid' : '') + '" data-id="' + esc(e.id) + '">' +
         shown.map(function (k, i) {
           var local = e._local && e._local[keys.indexOf(k)];
           return '<button class="ph" data-idx="' + i + '" type="button">' +
@@ -347,6 +350,9 @@
         (fmtTime(e.at)
           ? '<span class="entry-time"><span class="slot-name">' + esc(SLOT[slotOf(e)] || '') +
             '</span>' + fmtTime(e.at) + '</span>'
+          : '') +
+        ((barePeek[e.id] || photoExpand[e.id])
+          ? '<button class="hide-btn" type="button" data-hide="' + esc(e.id) + '">收起</button>'
           : '') +
         '<div class="meta">' + pills.join('') + '</div>' +
         '<div class="entry-act">' +
@@ -519,8 +525,20 @@
 
 
       var pk = ev.target.closest('[data-peek]');
-      if (pk) {
-        barePeek[pk.dataset.peek] = true;
+      if (pk) { barePeek[pk.dataset.peek] = true; go('timeline'); return; }
+
+      var hd = ev.target.closest('[data-hide]');
+      if (hd) {
+        delete barePeek[hd.dataset.hide];
+        delete photoExpand[hd.dataset.hide];
+        go('timeline');
+        return;
+      }
+
+      // 点 +N 直接在页面里平铺全部，不进灯箱
+      var mc = ev.target.closest('.more-chip');
+      if (mc) {
+        photoExpand[mc.closest('.entry').dataset.id] = true;
         go('timeline');
         return;
       }
@@ -771,7 +789,7 @@
 
     var rows = ws.slice().reverse().slice(0, 8).map(function (w) {
       return '<div class="w-row"><b>' + esc(fmtDate(w.date)) + '</b>' +
-        '<span>' + w.kg.toFixed(1) + ' kg</span>' +
+        '<span>' + (w.kg * 2).toFixed(1) + ' 斤</span>' +
         (w.note ? '<i>' + esc(w.note) + '</i>' : '') + '</div>';
     }).join('');
 
@@ -779,11 +797,11 @@
       '<div class="card" id="weightCard">' +
         (last
           ? '<div class="w-now">' +
-              '<span class="w-kg">' + last.kg.toFixed(1) + '<i>kg</i></span>' +
+              '<span class="w-kg">' + (last.kg * 2).toFixed(1) + '<i>斤</i></span>' +
               (bmi ? '<span class="pill">BMI ' + bmi.toFixed(1) + '</span>' : '') +
               (delta != null
                 ? '<span class="pill ' + (delta > 0 ? 'good' : delta < 0 ? 'watch' : '') + '">' +
-                  (delta > 0 ? '+' : '') + delta.toFixed(1) + ' kg</span>'
+                  (delta > 0 ? '+' : '') + (delta * 2).toFixed(1) + ' 斤</span>'
                 : '') +
               '<span class="tiny" style="margin-left:auto">' + esc(fmtDate(last.date)) + '</span>' +
             '</div>' + chart
@@ -823,7 +841,7 @@
     var box = el(
       '<div class="inline-edit" id="w-edit">' +
         '<div class="w-form">' +
-          '<input type="number" id="w-kg" step="0.1" inputmode="decimal" placeholder="kg">' +
+          '<input type="number" id="w-kg" step="0.1" inputmode="decimal" placeholder="斤">' +
           '<input type="date" id="w-date" value="' + todayISO() + '">' +
         '</div>' +
         '<input type="text" id="w-note" placeholder="备注（可留空）" style="margin-top:8px">' +
@@ -837,11 +855,12 @@
     box.querySelector('#w-kg').focus();
     box.querySelector('.ie-cancel').addEventListener('click', function () { go('mainlines'); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
-      var kg = Number(box.querySelector('#w-kg').value);
-      if (!kg || kg < 20 || kg > 200) return toast('体重填一下', true);
+      // 界面上填的是斤，内部统一存 kg —— BMI 要用 kg 算
+      var jin = Number(box.querySelector('#w-kg').value);
+      if (!jin || jin < 40 || jin > 400) return toast('体重填一下（斤）', true);
       saveWeight({
         date: box.querySelector('#w-date').value || todayISO(),
-        kg: Math.round(kg * 10) / 10,
+        kg: Math.round((jin / 2) * 100) / 100,
         note: box.querySelector('#w-note').value.trim() || undefined,
       });
     });
@@ -862,7 +881,7 @@
 
     GitStore.commit(
       [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }],
-      '体重 ' + w.date + ' ' + w.kg + 'kg'
+      '体重 ' + w.date + ' ' + (w.kg * 2).toFixed(1) + '斤'
     ).then(loadData).then(function () {
       if (state.view === 'mainlines') go('mainlines');
     }).catch(function (e) { toast('没存上：' + (e.message || e), true); });
@@ -1750,6 +1769,29 @@
     return 'skincare';
   }
 
+  /* 按使用顺序排，不再按分类堆 —— 这个顺序就是实际上脸的顺序 */
+  var ORDER = {
+    makeup: ['粉底', '遮瑕', '粉饼', '睫毛', '眼线', '眼影', '修容', '腮红', '卸妆'],
+    skincare: ['水', '乳', '精华', '面膜', '眼膜', '眼霜'],
+    device: [],
+  };
+
+  function orderIndex(p) {
+    var list = ORDER[kindOf(p)] || [];
+    var hay = (p.category || '') + ' ' + p.name;
+    for (var i = 0; i < list.length; i++) {
+      if (hay.indexOf(list[i]) >= 0) return i;
+    }
+    return 999;   // 没匹配上的排最后
+  }
+
+  function sortProducts(rows) {
+    return rows.slice().sort(function (a, b) {
+      var d = orderIndex(a) - orderIndex(b);
+      return d !== 0 ? d : (a.name < b.name ? -1 : 1);
+    });
+  }
+
   function avgScore(p) {
     var rs = (p.reviews || []).map(function (r) { return r.score; })
       .filter(function (v) { return typeof v === 'number'; });
@@ -1763,9 +1805,9 @@
 
     var body = '';
     KINDS.forEach(function (k) {
-      var rows = list.filter(function (p) {
+      var rows = sortProducts(list.filter(function (p) {
         return kindOf(p) === k.key && p.status !== 'retired';
-      });
+      }));
       if (!rows.length) return;
       var closed = prodFold[k.key];
       body +=
@@ -2278,7 +2320,7 @@
 
     var av = $('#appVersion');
     if (av && window.PRETTIER_BUILD) {
-      av.textContent = 'prettier ' + PRETTIER_BUILD.v + ' · ' + PRETTIER_BUILD.at;
+      av.textContent = 'Prettier ' + PRETTIER_BUILD.v + ' · ' + PRETTIER_BUILD.at;
     }
 
     state.owner = get(LS.owner, '');

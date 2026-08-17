@@ -117,6 +117,11 @@
           }),
         }).then(function (res) {
           if (res.status === 404) { lastErr = new Error('模型 ' + model + ' 不存在'); return null; }
+          if (res.status === 503 || res.status === 500) {
+            // Google 那边过载，不是你的问题。换下一个模型再试。
+            lastErr = new Error('Gemini 服务器忙（' + res.status + '），稍后再试或先用百炼');
+            return null;
+          }
           if (!res.ok) {
             return res.text().then(function (t) {
               if (res.status === 400 && /API key/i.test(t)) throw new Error('Gemini API Key 不对');
