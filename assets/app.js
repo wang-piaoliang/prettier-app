@@ -1853,8 +1853,14 @@
 
   /* 同一个产品可以在不同时间反复打分 —— 用久了感受会变，
      这些变化本身就是信息，所以留全部记录，卡片上显示平均分。 */
+  function closeInlineEditors() {
+    $$('.inline-edit').forEach(function (n) { n.remove(); });
+    $$('.prod-detail').forEach(function (n) { n.remove(); });
+  }
+
   function openReviewEditor(id, card) {
     if (card.querySelector('.inline-edit')) return;
+    closeInlineEditors();   // 一次只开一个，否则页面上会堆好几个编辑框
     var box = el(
       '<div class="inline-edit">' +
         '<div class="score-row">' +
@@ -1915,6 +1921,7 @@
   function toggleProdDetail(id, card) {
     var old = card.querySelector('.prod-detail');
     if (old) { old.remove(); return; }
+    closeInlineEditors();
 
     var p = allProducts().filter(function (x) { return x.id === id; })[0];
     if (!p) return;

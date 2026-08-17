@@ -824,11 +824,16 @@ textarea { min-height: 64px; }
   border: 1px solid var(--line); border-radius: 12px;
   background: var(--card-2);
 }
+/* ⚠️ 所有能获得焦点的输入框都必须 ≥16px。
+   iOS 对小于 16px 的输入框会在聚焦时自动放大整个页面，
+   放大之后页面就能左右滑，看起来像布局坏了。
+   想让它显得小，用行高和内边距收，不要动字号。 */
 .inline-edit textarea {
-  width: 100%; min-height: 56px; background: var(--card);
-  font-family: var(--sans); font-size: 14px; line-height: 1.7;
-  padding: 10px 12px;
+  width: 100%; min-height: 54px; background: var(--card);
+  font-family: var(--sans); font-size: 16px; line-height: 1.55;
+  padding: 9px 11px;
 }
+.inline-edit input { font-size: 16px; }
 .ie-act { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
 .ie-act button {
   border: none; border-radius: 9px; padding: 7px 14px; cursor: pointer;
@@ -937,3 +942,8 @@ body.no-scroll { overflow: hidden; touch-action: none; }
 .w-row i { font-style: normal; color: var(--ink-faint); font-size: 12px; }
 .w-form { display: flex; gap: 8px; }
 .w-form input { flex: 1; min-width: 0; }
+
+
+/* 兜底：页面永远不横向滚动 */
+html, body { max-width: 100%; overflow-x: hidden; }
+.inline-edit, .prod-detail { max-width: 100%; }
