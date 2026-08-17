@@ -149,7 +149,19 @@
      files: [{path, text}] 或 [{path, blob}]
      一次提交里可以带任意多个文件。 */
 
-  function commit(files, message, onStep) {
+  /* 422 "Update is not a fast forward" = 从读 head 到更新分支这段时间里，
+     分支被别的提交推进了（比如后台上传队列刚写完一条）。
+     这时候整个提交要基于新的 head 重做一遍，不能只重试最后那一步。 */
+  function commit(files, message, onStep, tries) {
+    tries = tries == null ? 3 : tries;
+    return commitOnce(files, message, onStep).catch(function (err) {
+      if (tries <= 0 || !/not a fast forward/i.test(err.message || '')) throw err;
+      return new Promise(function (r) { setTimeout(r, 600); })
+        .then(function () { return commit(files, message, onStep, tries - 1); });
+    });
+  }
+
+  function commitOnce(files, message, onStep) {
     var baseSha;
     var lastStep = '';
     var step = function (t) { lastStep = t; if (onStep) onStep(t); };
@@ -190,7 +202,7 @@
       return req(repoPath('/git/refs/heads/' + cfg.branch), {
         method: 'PATCH',
         body: { sha: newCommit.sha },
-      }).then(function () { return newCommit.sha; });
+      }, 0).then(function () { return newCommit.sha; });
     }).catch(function (err) {
       // 把「在哪一步失败」带出去，光看 HTTP 码没法判断
       err.step = lastStep;
@@ -201,7 +213,16 @@
   /* ---------- 删除 ----------
      Git 里删文件 = 提交一棵不含它的树。用 sha:null 标记删除。 */
 
-  function commitDelete(paths, message) {
+  function commitDelete(paths, message, tries) {
+    tries = tries == null ? 3 : tries;
+    return commitDeleteOnce(paths, message).catch(function (err) {
+      if (tries <= 0 || !/not a fast forward/i.test(err.message || '')) throw err;
+      return new Promise(function (r) { setTimeout(r, 600); })
+        .then(function () { return commitDelete(paths, message, tries - 1); });
+    });
+  }
+
+  function commitDeleteOnce(paths, message) {
     var baseSha;
     return head().then(function (sha) {
       baseSha = sha;

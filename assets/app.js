@@ -317,8 +317,7 @@
     var ov = overall(e);
     var pills = [];
     if (e.face) pills.push('<span class="pill">' + esc(FACE[e.face] || e.face) + '</span>');
-    var sl = slotOf(e);
-    if (sl) pills.push('<span class="pill">' + esc(SLOT[sl] || sl) + '</span>');
+
     if (ov != null) pills.push('<span class="pill ' + pillLevel(ov) + '">肤况 ' + ov.toFixed(1) + '</span>');
     if (e.makeup && typeof e.makeup.fit === 'number') {
       pills.push('<span class="pill ' + pillLevel(e.makeup.fit) + '">妆 ' + e.makeup.fit + '</span>');
@@ -334,8 +333,16 @@
     return '<article class="entry" data-id="' + esc(e.id) + '">' + photos +
       '<div class="entry-body">' +
         '<div class="entry-head">' +
-        (fmtTime(e.at) ? '<span class="entry-time">' + fmtTime(e.at) + '</span>' : '') +
-        '<div class="meta" style="margin-left:auto">' + pills.join('') + '</div></div>' +
+        (fmtTime(e.at)
+          ? '<span class="entry-time"><span class="slot-name">' + esc(SLOT[slotOf(e)] || '') +
+            '</span>' + fmtTime(e.at) + '</span>'
+          : '') +
+        '<div class="meta">' + pills.join('') + '</div>' +
+        '<div class="entry-act">' +
+          '<button data-del="' + esc(e.id) + '" aria-label="删除">🗑</button>' +
+          '<button data-edit="' + esc(e.id) + '" aria-label="编辑">✎</button>' +
+        '</div>' +
+        '</div>' +
         (e.light ? '<div class="tiny" style="margin-bottom:10px">' + esc(e.light) + '</div>' : '') +
         (tags ? '<div class="meta" style="margin-bottom:10px">' + tags + '</div>' : '') +
         scoresHTML(e.scores) +
@@ -343,10 +350,6 @@
         zonesHTML(e.zones) +
         makeupHTML(e.makeup) +
         (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
-        '<div class="entry-act">' +
-          '<button data-edit="' + esc(e.id) + '" aria-label="编辑" title="编辑">✎</button>' +
-          '<button data-del="' + esc(e.id) + '" aria-label="删除" title="删除">🗑</button>' +
-        '</div>' +
       '</div></article>';
   }
 
@@ -372,7 +375,7 @@
   }
 
   /* ---- 趋势图：按日聚合，横轴按真实日期间隔 ---- */
-  function chartSVG(entries, dimKey) {
+  function chartSVG(entries, dimKey) {   // entries: [{date, scores}]
     var byDay = {};
     entries.slice().sort(ascCompare).forEach(function (e) {
       var v = dimKey === '__all' ? overall(e) : (e.scores ? e.scores[dimKey] : null);
@@ -446,9 +449,12 @@
     });
     days.forEach(function (d) { d.rows.sort(ascCompare); });
 
+    var notes = (state.data && state.data.dayNotes) || {};
+
     host.innerHTML =
       '<div class="tl-bar">' +
         '<span class="tiny">' + days.length + ' 天 · ' + list.length + ' 条</span>' +
+        '<button id="openTrend" type="button">趋势</button>' +
         '<button id="foldAll" type="button">' +
           (allCollapsed ? '全部展开' : '全部折叠') +
         '</button>' +
@@ -465,6 +471,11 @@
             '<span class="ml-caret">▾</span>' +
           '</button>' +
           '<div class="day-body"' + (closed ? ' hidden' : '') + '>' +
+            (notes[d.date]
+              ? '<div class="day-note" data-note="' + esc(d.date) + '">' +
+                esc(notes[d.date]) + '</div>'
+              : '<button class="day-note-btn" data-note="' + esc(d.date) + '" type="button">' +
+                '＋ 写一句今天的小结</button>') +
             d.rows.map(function (e) { return entryHTML(e); }).join('') +
           '</div>' +
         '</section>';
@@ -490,6 +501,11 @@
         if (!collapsedDays[date]) hydratePhotos(sec);
         return;
       }
+      if (ev.target.closest('#openTrend')) { go('trend'); return; }
+
+      var nt = ev.target.closest('[data-note]');
+      if (nt) return editDayNote(nt.dataset.note);
+
       if (ev.target.closest('#foldAll')) {
         allCollapsed = !allCollapsed;
         $$('.day', host).forEach(function (sec) {
@@ -508,95 +524,150 @@
     });
   }
 
+  function editDayNote(date) {
+    var notes = Object.assign({}, (state.data && state.data.dayNotes) || {});
+    var cur = notes[date] || '';
+    var v = prompt(fmtDate(date) + ' 的小结：', cur);
+    if (v === null) return;                    // 取消
+    v = v.trim();
+    if (v) notes[date] = v; else delete notes[date];
+
+    var conf = Object.assign({}, state.data);
+    delete conf.entries;
+    conf.dayNotes = notes;
+
+    toast('保存中…');
+    GitStore.commit(
+      [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }],
+      '小结 ' + date
+    ).then(loadData).then(function () { go('timeline'); toast('已保存'); })
+     .catch(function (e) { toast('失败：' + (e.message || e), true); });
+  }
+
+  /* 趋势按【月】走，不按每条记录。
+     日常那些带妆的、近距离的、光线各异的照片放一起比毫无意义 ——
+     只有把同一个月的素颜照凑成一批、在同一次判读里比较，分数才可比。
+     所以每月只评一次。 */
+
+  function monthOf(e) { return String(e.date || '').slice(0, 7); }
+
+  function bareOfMonth(ym) {
+    return ((state.data && state.data.entries) || []).filter(function (e) {
+      return monthOf(e) === ym && e.face === 'bare' && (e.photos || []).length;
+    });
+  }
+
   function renderTrend() {
     var host = $('#view-trend');
-    var entries = (state.data && state.data.entries) || [];
-    var opts = [{ value: '__all', label: '综合' }].concat(
-      dims().map(function (d) { return { value: d.key, label: d.label }; })
-    );
+    var monthly = (state.data && state.data.monthly) || {};
+    var keys = Object.keys(monthly).sort();
+    var thisMonth = todayISO().slice(0, 7);
+    var bare = bareOfMonth(thisMonth);
+
+    var chart = keys.length >= 2
+      ? chartSVG(keys.map(function (k) {
+          return { date: k + '-15', scores: monthly[k].scores };
+        }), '__all')
+      : '<div class="empty">' +
+        (keys.length === 1
+          ? '只有一个月的评分（' + keys[0] + '：' +
+            (monthly[keys[0]].overall || 0).toFixed(1) + '），下个月就有趋势线了。'
+          : '还没有月度评分。') + '</div>';
 
     host.innerHTML =
-      '<div class="section-title">状态趋势</div>' +
-      '<div class="card"><div class="segmented" id="dimSeg" style="margin-bottom:14px">' +
-      opts.map(function (o, i) {
-        return '<button data-v="' + esc(o.value) + '"' + (i ? '' : ' class="on"') + '>' +
-          esc(o.label) + '</button>';
-      }).join('') +
-      '</div><div id="chartBox"></div>' +
-      '<div class="tiny" style="margin-top:12px;text-align:center">1–5 分，5 = 状态最好</div></div>' +
-      '<div class="section-title">拍摄条件</div>' +
-      '<div class="card muted">不同光线、距离、上妆与否的照片<b>不能直接比分数高低</b>。' +
-      '要看某个产品有没有用，得在同样光线下、同样素颜再拍一张对比。</div>';
+      '<div class="section-title">月度趋势</div>' +
+      '<div class="card">' + chart + '</div>' +
 
-    var box = $('#chartBox', host);
-    box.innerHTML = chartSVG(entries, '__all');
-    $('#dimSeg', host).addEventListener('click', function (ev) {
-      var b = ev.target.closest('button');
-      if (!b) return;
-      $$('#dimSeg button', host).forEach(function (x) { x.classList.remove('on'); });
-      b.classList.add('on');
-      box.innerHTML = chartSVG(entries, b.dataset.v);
-    });
+      '<div class="section-title">' + thisMonth + '</div>' +
+      '<div class="card">' +
+        '<div class="tiny" style="margin-bottom:12px">' +
+          '本月素颜照 ' + bare.length + ' 条' +
+          (monthly[thisMonth] ? '　·　已评：' + monthly[thisMonth].overall.toFixed(1) : '') +
+        '</div>' +
+        (bare.length
+          ? '<button class="btn ghost" id="evalMonth" type="button">' +
+              (monthly[thisMonth] ? '重新评这个月' : '让 AI 评这个月') +
+            '</button>'
+          : '<div class="tiny">这个月还没有素颜照。带妆照判读不了色斑，进不了趋势。</div>') +
+        '<div id="evalOut"></div>' +
+      '</div>' +
+
+      (keys.length
+        ? '<div class="section-title">历月</div>' +
+          keys.slice().reverse().map(function (k) {
+            var m = monthly[k];
+            return '<div class="card" style="margin-bottom:10px">' +
+              '<div class="entry-head" style="border:none;margin:0;padding:0">' +
+                '<span class="entry-date">' + esc(k) + '</span>' +
+                '<span class="pill ' + pillLevel(m.overall) + '" style="margin-left:auto">' +
+                  m.overall.toFixed(1) + '</span>' +
+              '</div>' +
+              scoresHTML(m.scores) +
+              (m.summary ? '<div class="note">' + esc(m.summary) + '</div>' : '') +
+            '</div>';
+          }).join('')
+        : '');
+
+    var btn = $('#evalMonth', host);
+    if (btn) btn.addEventListener('click', function () { evalMonth(thisMonth); });
   }
 
-  function renderMainlines() {
-    var host = $('#view-mainlines');
-    var ml = (state.data && state.data.mainlines) || [];
-    if (!ml.length) {
-      host.innerHTML = '<div class="empty">还没有主线问题。</div>';
-      return;
-    }
+  function evalMonth(ym) {
+    if (!ensureKey()) return;
+    var rows = bareOfMonth(ym);
+    if (!rows.length) return toast('这个月没有素颜照', true);
 
-    var card = function (m, idx) {
-      var body = [
-        m.summary ? '<div class="body">' + esc(m.summary) + '</div>' : '',
-        m.plan ? '<div class="next"><b>怎么做</b><br>' + esc(m.plan) + '</div>' : '',
-        m.watch ? '<div class="next"><b>注意</b><br>' + esc(m.watch) + '</div>' : '',
-        m.invalid ? '<div class="next"><b>无效的做法</b><br>' + esc(m.invalid) + '</div>' : '',
-      ].join('');
+    var btn = $('#evalMonth'), out = $('#evalOut');
+    btn.disabled = true;
+    btn.textContent = '取照片…';
 
-      return '<div class="card mainline">' +
-        '<button class="ml-head" type="button" data-i="' + idx + '" aria-expanded="false">' +
-          '<span class="ml-title">' + esc(m.key) + '</span>' +
-          (m.area ? '<span class="pill">' + esc(m.area) + '</span>' : '') +
-          '<span class="ml-caret">▾</span>' +
-        '</button>' +
-        '<div class="ml-body" hidden>' + body + '</div>' +
-      '</div>';
-    };
+    // 每条记录取第一张，最多 4 张 —— 再多模型容易串台
+    var picks = rows.map(function (e) { return e.photos[0]; }).slice(0, 4);
 
-    host.innerHTML = '<div class="section-title">在跟的问题</div>' +
-      ml.map(card).join('') +
-      procedureHTML();
+    picks.reduce(function (chain, p) {
+      return chain.then(function (acc) {
+        return photoURL(p).then(function (u) { return fetch(u); })
+          .then(function (r) { return r.blob(); })
+          .then(function (b) { return acc.concat([b]); });
+      });
+    }, Promise.resolve([])).then(function (blobs) {
+      btn.textContent = 'AI 判读中…';
+      var S = state.data || {};
+      return PrettierAI.analyze(blobs, {
+        face: 'bare',
+        light: '本月各次素颜记录，光线不完全一致',
+        slotLabel: ym + ' 全月',
+        dimensions: S.dimensions || [],
+        makeupDimensions: [],
+        mirrored: true,
+        background: (S.mainlines || []).map(function (m) {
+          return '· ' + m.key + (m.area ? '（' + m.area + '）' : '');
+        }).join('\n'),
+      });
+    }).then(function (r) {
+      var vals = Object.keys(r.scores || {}).map(function (k) { return r.scores[k]; });
+      if (!vals.length) throw new Error('AI 没能给出可用的分数');
+      var overall = vals.reduce(function (x, y) { return x + y; }, 0) / vals.length;
 
-    host.addEventListener('click', function (ev) {
-      var h = ev.target.closest('.ml-head');
-      if (!h) return;
-      var body = h.nextElementSibling;
-      var open = !body.hidden;
-      body.hidden = open;
-      h.setAttribute('aria-expanded', String(!open));
-      h.classList.toggle('open', !open);
+      var conf = Object.assign({}, state.data);
+      delete conf.entries;
+      conf.monthly = Object.assign({}, conf.monthly);
+      conf.monthly[ym] = {
+        scores: r.scores, overall: overall, summary: r.summary || '',
+        photos: picks.length, model: r.model, at: r.at,
+      };
+      return GitStore.commit(
+        [{ path: 'settings.json', text: JSON.stringify(conf, null, 2) }],
+        '月度评分 ' + ym
+      );
+    }).then(loadData).then(function () {
+      toast('已记下这个月');
+      go('trend');
+    }).catch(function (e) {
+      toast('失败：' + (e.message || e), true);
+      btn.disabled = false;
+      btn.textContent = '重试';
     });
-  }
-
-  function procedureHTML() {
-    var list = (state.data && state.data.procedures) || [];
-    if (!list.length) {
-      return '<div class="section-title">医美记录</div>' +
-        '<div class="empty">还没有记录。做过什么、什么时候做的，记在这里。</div>';
-    }
-    return '<div class="section-title">医美记录</div>' +
-      list.slice().reverse().map(function (p) {
-        return '<div class="card" style="margin-bottom:12px">' +
-          '<div class="entry-head" style="border:none;margin:0;padding:0">' +
-            '<span class="entry-date">' + fmtDate(p.date) + '</span>' +
-            '<span class="pill accent" style="margin-left:auto">' + esc(p.name) + '</span>' +
-          '</div>' +
-          (p.note ? '<div class="note" style="border:none;padding-top:8px">' +
-                    esc(p.note) + '</div>' : '') +
-        '</div>';
-      }).join('');
   }
 
   /* ---- 记一条 ---- */
@@ -656,8 +727,12 @@
       '</div>' +
 
       '<div class="field"><label>时间</label>' +
-        '<input type="datetime-local" id="fAt" value="' + esc(d.at) + '">' +
-        '<div class="tiny hint" id="slotHint"></div>' +
+        /* 拆成两个原生输入框：datetime-local 在 iOS 上要点两次才能改时间，
+           分开之后各自一点即改 */
+        '<div class="dt-row">' +
+          '<input type="date" id="fDate" value="' + esc(d.at.slice(0, 10)) + '">' +
+          '<input type="time" id="fTime" value="' + esc(d.at.slice(11, 16)) + '">' +
+        '</div>' +
       '</div>' +
 
       '<div class="field"><label>备注</label>' +
@@ -736,7 +811,6 @@
 
     drawPicker();
     drawRates();
-    updateSlotHint();
 
     $('#moreToggle', host).addEventListener('click', function () {
       var box = $('#moreBox', host);
@@ -792,13 +866,15 @@
       drawRates();
     });
 
-    $('#fAt', host).addEventListener('change', function () {
-      d.at = this.value || nowLocal();
-      d.date = d.at.slice(0, 10);
-      var h = Number(d.at.slice(11, 13));
-      d.slot = slotFromHour(isNaN(h) ? 12 : h);
-      updateSlotHint();
-    });
+    var syncAt = function () {
+      var dt = $('#fDate', host).value || todayISO();
+      var tm = $('#fTime', host).value || nowLocal().slice(11, 16);
+      d.at = dt + 'T' + tm;
+      d.date = dt;
+      d.slot = slotFromHour(Number(tm.slice(0, 2)) || 0);
+    };
+    $('#fDate', host).addEventListener('change', syncAt);
+    $('#fTime', host).addEventListener('change', syncAt);
     $('#fLight', host).addEventListener('input', function () { d.light = this.value; });
     $('#fNote', host).addEventListener('input', function () { d.note = this.value; });
     $('#fTags', host).addEventListener('input', function () {
@@ -838,13 +914,6 @@
     });
   }
 
-  function updateSlotHint() {
-    var el2 = $('#slotHint');
-    if (!el2) return;
-    var d = state.draft;
-    el2.textContent = '默认是上传当下的时间，可以改。当前归类为「' +
-      (SLOT[d.slot] || '') + '」。';
-  }
 
   /* ---- AI 判读 ---- */
 
@@ -946,9 +1015,12 @@
       host.classList.remove('dragmode');
     }
 
+    var sx = 0, sy = 0;
+
     host.addEventListener('touchstart', function (ev) {
       var slot = ev.target.closest('.slot');
       if (!slot || ev.target.closest('.del')) return;
+      sx = ev.touches[0].clientX; sy = ev.touches[0].clientY;
       timer = setTimeout(function () {
         from = keyOf(slot);
         slot.classList.add('dragging');
@@ -958,7 +1030,16 @@
     }, { passive: true });
 
     host.addEventListener('touchmove', function (ev) {
-      if (!from) { clearTimeout(timer); return; }   // 还没进拖拽就滑动＝想滚页面
+      if (!from) {
+        /* 手指按在屏幕上几乎必然有几像素抖动，一动就取消长按的话
+           根本按不出来。超过 12px 才当成「想滚页面」。 */
+        var t0 = ev.touches[0];
+        if (Math.abs(t0.clientX - sx) > 12 || Math.abs(t0.clientY - sy) > 12) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        return;
+      }
       ev.preventDefault();
       moved = true;
       var t = ev.touches[0];
@@ -1391,32 +1472,60 @@
 
   function allProducts() { return (state.data && state.data.products) || []; }
 
+  var KINDS = [
+    { key: 'makeup',   label: '彩妆' },
+    { key: 'skincare', label: '护肤' },
+    { key: 'device',   label: '仪器' },
+  ];
+  var prodFold = {};      // kind -> true 表示收起
+
+  function kindOf(p) {
+    if (p.kind === 'device' || p.kind === 'makeup') return p.kind;
+    // 仪器以前被归进护肤，按分类名认出来
+    if (/仪|灯|device|LED/i.test((p.category || '') + p.name)) return 'device';
+    return 'skincare';
+  }
+
+  function avgScore(p) {
+    var rs = (p.reviews || []).map(function (r) { return r.score; })
+      .filter(function (v) { return typeof v === 'number'; });
+    if (!rs.length) return null;
+    return rs.reduce(function (x, y) { return x + y; }, 0) / rs.length;
+  }
+
   function renderProducts() {
     var host = $('#view-products');
     var list = allProducts();
 
-    var body;
-    if (!list.length) {
-      body = '<div class="empty"><strong>产品库还是空的</strong>' +
-        '拍一张护肤品或彩妆的照片，AI 会认出品牌和品名。<br>' +
-        '入库之后，记录里就能直接引用。</div>';
-    } else {
-      var out = [];
-      ['skincare', 'makeup'].forEach(function (kind) {
-        var rows = list.filter(function (p) {
-          return (p.kind || 'skincare') === kind && p.status !== 'retired';
-        });
-        if (!rows.length) return;
-        out.push('<div class="cat-head">' + (kind === 'skincare' ? '护肤' : '彩妆') +
-                 '<span>' + rows.length + '</span></div>');
-        out.push('<div class="prod-list">' + rows.map(prodCardHTML).join('') + '</div>');
+    var body = '';
+    KINDS.forEach(function (k) {
+      var rows = list.filter(function (p) {
+        return kindOf(p) === k.key && p.status !== 'retired';
       });
-      var retired = list.filter(function (p) { return p.status === 'retired'; });
-      if (retired.length) {
-        out.push('<div class="cat-head">已停用<span>' + retired.length + '</span></div>');
-        out.push('<div class="prod-list dim">' + retired.map(prodCardHTML).join('') + '</div>');
-      }
-      body = out.join('');
+      if (!rows.length) return;
+      var closed = prodFold[k.key];
+      body +=
+        '<div class="cat-head' + (closed ? ' closed' : '') + '" data-kind="' + k.key + '">' +
+          esc(k.label) + '<span>' + rows.length + '</span>' +
+          '<span class="ml-caret">▾</span>' +
+        '</div>' +
+        '<div class="prod-list"' + (closed ? ' hidden' : '') + '>' +
+          rows.map(prodCardHTML).join('') + '</div>';
+    });
+
+    var retired = list.filter(function (p) { return p.status === 'retired'; });
+    if (retired.length) {
+      var rClosed = prodFold.retired;
+      body +=
+        '<div class="cat-head' + (rClosed ? ' closed' : '') + '" data-kind="retired">' +
+          '已停用<span>' + retired.length + '</span><span class="ml-caret">▾</span></div>' +
+        '<div class="prod-list dim"' + (rClosed ? ' hidden' : '') + '>' +
+          retired.map(prodCardHTML).join('') + '</div>';
+    }
+
+    if (!body) {
+      body = '<div class="empty"><strong>产品库还是空的</strong>' +
+        '拍一张护肤品或彩妆的照片，AI 会认出品牌和品名。</div>';
     }
 
     host.innerHTML =
@@ -1425,33 +1534,99 @@
           list.filter(function (p) { return p.status !== 'retired'; }).length + ' 件在用</span>' +
         '<button id="scanBtn" type="button">＋ 拍照识别</button>' +
       '</div>' +
-      '<div id="scanOut"></div>' +
-      body +
+      '<div id="scanOut"></div>' + body +
       '<button class="more-toggle" id="addProdBtn" type="button">手动添加一件</button>';
 
     $('#scanBtn', host).addEventListener('click', function () { $('#prodInput').click(); });
     $('#addProdBtn', host).addEventListener('click', addProductManually);
-    host.addEventListener('click', function (ev) {
-      var b = ev.target.closest('[data-del]');
-      if (b) return removeProduct(b.dataset.del);
-      var t = ev.target.closest('[data-toggle]');
-      if (t) return toggleProduct(t.dataset.toggle);
-    });
+
+    if (!host.dataset.bound) {
+      host.dataset.bound = '1';
+      host.addEventListener('click', function (ev) {
+        var ch = ev.target.closest('[data-kind]');
+        if (ch) {
+          var k = ch.dataset.kind;
+          prodFold[k] = !prodFold[k];
+          ch.classList.toggle('closed', prodFold[k]);
+          ch.nextElementSibling.hidden = prodFold[k];
+          return;
+        }
+        var rv = ev.target.closest('[data-review]');
+        if (rv) return addReview(rv.dataset.review);
+        var ex = ev.target.closest('[data-expand]');
+        if (ex) {
+          var box = document.getElementById('rv-' + ex.dataset.expand);
+          if (box) box.hidden = !box.hidden;
+          return;
+        }
+        var b = ev.target.closest('[data-del]');
+        if (b) return removeProduct(b.dataset.del);
+        var t = ev.target.closest('[data-toggle]');
+        if (t) return toggleProduct(t.dataset.toggle);
+      });
+    }
     hydratePhotos(host);
   }
 
   function prodCardHTML(p) {
     var sub = [p.brand, p.category].filter(Boolean).join(' · ');
+    var dates = [];
+    if (p.start) dates.push('起 ' + fmtDate(p.start));
+    if (p.status === 'retired' && p.end) dates.push('停 ' + fmtDate(p.end));
+    var avg = avgScore(p);
+    var rs = p.reviews || [];
+
     return '<div class="prod-card">' +
       '<div class="pc-main">' +
         '<div class="nm">' + esc(p.name) + '</div>' +
         (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') +
+        (dates.length ? '<div class="sub">' + esc(dates.join(' · ')) + '</div>' : '') +
       '</div>' +
+      (avg != null ? '<span class="prod-score">' + avg.toFixed(1) + '</span>' : '') +
       '<div class="act">' +
+        '<button data-review="' + esc(p.id) + '" aria-label="打分">评</button>' +
+        (rs.length ? '<button data-expand="' + esc(p.id) + '">' + rs.length + '</button>' : '') +
         '<button data-toggle="' + esc(p.id) + '">' +
           (p.status === 'retired' ? '恢复' : '停用') + '</button>' +
-        '<button data-del="' + esc(p.id) + '">删除</button>' +
-      '</div></div>';
+        '<button data-del="' + esc(p.id) + '">删</button>' +
+      '</div>' +
+      (rs.length
+        ? '<div class="prod-reviews" id="rv-' + esc(p.id) + '" hidden>' +
+          rs.slice().reverse().map(function (r) {
+            return '<div class="prod-review">' +
+              '<b>' + esc(fmtDate(r.date)) + (r.score ? ' · ' + r.score + '分' : '') + '</b>' +
+              '<span>' + esc(r.text || '') + '</span></div>';
+          }).join('') + '</div>'
+        : '') +
+    '</div>';
+  }
+
+  /* 同一个产品可以在不同时间反复打分 —— 用久了感受会变，
+     这些变化本身就是信息，所以留全部记录，卡片上显示平均分。 */
+  function addReview(id) {
+    var list = allProducts();
+    var p = list.filter(function (x) { return x.id === id; })[0];
+    if (!p) return;
+    var sc = prompt('给「' + p.name + '」打分（1–5，可留空只写评论）：', '');
+    if (sc === null) return;
+    var txt = prompt('这次的感受（可留空）：', '');
+    if (txt === null) return;
+    var n = Number(sc);
+    if (!sc.trim() && !txt.trim()) return;
+
+    var next = list.map(function (x) {
+      if (x.id !== id) return x;
+      var y = Object.assign({}, x);
+      y.reviews = (y.reviews || []).concat([{
+        date: todayISO(),
+        score: (n >= 1 && n <= 5) ? Math.round(n) : undefined,
+        text: txt.trim() || undefined,
+      }]);
+      return y;
+    });
+    saveProducts(next, '产品库：' + p.name + ' 新增评价')
+      .then(function () { toast('已记下'); })
+      .catch(function (e) { toast('失败：' + e.message, true); });
   }
 
   function saveProducts(list, message) {
@@ -1473,22 +1648,31 @@
   }
 
   function toggleProduct(id) {
+    var today = todayISO();
     var list = allProducts().map(function (x) {
       if (x.id !== id) return x;
-      return Object.assign({}, x, { status: x.status === 'retired' ? 'using' : 'retired' });
+      var y = Object.assign({}, x);
+      if (y.status === 'retired') { y.status = 'using'; delete y.end; }
+      else { y.status = 'retired'; y.end = today; }   // 停用要记下日期
+      if (!y.start) y.start = y.addedAt || today;
+      return y;
     });
-    saveProducts(list, '产品库：切换状态').catch(function (e) { toast('失败：' + e.message, true); });
+    saveProducts(list, '产品库：切换状态')
+      .then(function () { toast('已更新'); })
+      .catch(function (e) { toast('失败：' + (e.message || e), true); });
   }
 
   function addProductManually() {
     var name = prompt('产品名（例：某某氨基酸洁面）');
     if (!name) return;
     var brand = prompt('品牌（可留空）') || '';
-    var kind = confirm('是彩妆吗？\n确定 = 彩妆，取消 = 护肤') ? 'makeup' : 'skincare';
+    var k = prompt('类别：1=彩妆　2=护肤　3=仪器', '2');
+    var kind = k === '1' ? 'makeup' : k === '3' ? 'device' : 'skincare';
+    var start = prompt('开始使用/购买日期（留空就用今天）：', todayISO()) || todayISO();
     var p = {
       id: 'p' + Date.now().toString(36),
       name: name.trim(), brand: brand.trim(), kind: kind,
-      status: 'using', addedAt: new Date().toISOString().slice(0, 10),
+      status: 'using', start: start, addedAt: todayISO(),
     };
     saveProducts(allProducts().concat([p]), '产品库：添加 ' + p.name)
       .then(function () { toast('已入库'); })
@@ -1539,7 +1723,8 @@
         return {
           id: 'p' + Date.now().toString(36) + i,
           name: x.name, brand: x.brand || '', kind: x.kind || 'skincare',
-          category: x.category || '', status: 'using', addedAt: now,
+          category: x.category || '', status: 'using',
+          start: now, addedAt: now,     // 没有购买日期就用入库这天
         };
       });
       return saveProducts(existing.concat(added), '产品库：AI 识别新增 ' + added.length + ' 件')

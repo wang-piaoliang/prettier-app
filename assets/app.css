@@ -103,9 +103,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .appbar h1 {
   margin: 0;
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 500;
-  letter-spacing: 3px;
+  letter-spacing: 3.5px;
   text-transform: uppercase;
   color: var(--accent-ink);
   font-family: var(--sans);
@@ -153,7 +153,7 @@ main {
   left: 0; right: 0; bottom: 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   padding-bottom: env(safe-area-inset-bottom);
   background: color-mix(in srgb, var(--bg) 94%, transparent);
   backdrop-filter: saturate(1.3) blur(12px);
@@ -738,3 +738,69 @@ input:focus, textarea:focus, select:focus {
   z-index: 2;
 }
 .drag-tip { grid-column: 1 / -1; text-align: center; margin-top: 2px; }
+
+
+/* 设置：和底部 tab 图标同一种气质，淡、无边框 */
+.glyphbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; padding: 0;
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-faint); font-size: 17px; line-height: 1;
+  border-radius: 50%;
+}
+.glyphbtn:active { background: var(--card-2); }
+
+/* ② 时段和时刻同一行、同一字体 */
+.entry-time .slot-name { margin-right: 6px; }
+
+/* ① 编辑/删除挪到头部右侧 */
+.entry-head .entry-act { margin-left: auto; margin-top: 0; }
+
+/* ③ 每天的小结 */
+.day-note {
+  margin: 0 2px 14px;
+  padding: 11px 14px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 10px 10px 0;
+  background: var(--accent-bg);
+  color: var(--ink-soft);
+  font-family: var(--sans); font-size: 13px; line-height: 1.8;
+  white-space: pre-wrap;
+}
+.day-note-btn {
+  margin: 0 2px 14px; padding: 0;
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-faint); font-family: var(--sans); font-size: 12px;
+}
+
+/* ⑦ 日期 + 时间两个输入框并排，各自可直接改 */
+.dt-row { display: flex; gap: 8px; }
+.dt-row input[type="date"] { flex: 1.35; }
+.dt-row input[type="time"] { flex: 1; }
+
+/* ⑨ 备注框矮一点，保存按钮不用下滑 */
+textarea { min-height: 64px; }
+
+/* ⑩ 产品：分类标题大一点，产品名小一点 */
+.cat-head { font-size: 14px; letter-spacing: 1.5px; cursor: pointer; }
+.cat-head .ml-caret { margin-left: auto; }
+.cat-head.closed .ml-caret { transform: rotate(-90deg); }
+.prod-card .nm { font-size: 14px; }
+.prod-card .sub { font-size: 11.5px; }
+
+/* ⑫ 产品评分与评论 */
+.prod-card { flex-wrap: wrap; }
+.prod-score {
+  font-family: var(--sans); font-size: 12px; color: var(--accent-ink);
+  flex: 0 0 auto; margin-right: 4px;
+}
+.prod-reviews {
+  flex: 1 0 100%; margin-top: 8px; padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+.prod-review { display: flex; gap: 10px; padding: 4px 0; }
+.prod-review b {
+  font-family: var(--sans); font-size: 11px; font-weight: 400;
+  color: var(--ink-faint); flex: 0 0 auto;
+}
+.prod-review span { color: var(--ink-soft); font-size: 13px; line-height: 1.65; }
