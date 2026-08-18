@@ -471,14 +471,14 @@
     [{ k: 'skincare', label: '护肤' }, { k: 'makeup', label: '彩妆' }].forEach(function (g) {
       var list = p[g.k] || [];
       if (!list.length) return;
-      var prev = prevUsed(e, g.k);
-      var isNew = function (n) { return prev ? prev.indexOf(n) < 0 : false; };
-      list.forEach(function (n) { if (isNew(n)) changedAll.push(n); });
+      var prev = (prevUsed(e, g.k) || []).map(prodKey);
+      var isNew = function (n) { return prev.length ? prev.indexOf(prodKey(n)) < 0 : false; };
+      list.forEach(function (n) { if (isNew(n)) changedAll.push(prodLabel(n)); });
       parts.push('<div class="prow"><b>' + g.label + '</b><span>' +
         list.map(function (n) {
           return isNew(n)
-            ? '<em class="p-new">' + esc(n) + '</em>'
-            : esc(n);
+            ? '<em class="p-new">' + esc(prodLabel(n)) + '</em>'
+            : esc(prodLabel(n));
         }).join(' · ') + '</span></div>');
     });
     if (!parts.length) return '';
@@ -1247,7 +1247,7 @@
     if (!list.length) return '';
     var chosen = {};
     ['skincare', 'makeup'].forEach(function (k) {
-      (sel[k] || []).forEach(function (n) { chosen[n] = 1; });
+      (sel[k] || []).forEach(function (n) { chosen[prodKey(n)] = 1; });
     });
 
     // 按护肤 / 彩妆 / 仪器分组，组内按你定的使用顺序
@@ -1264,10 +1264,9 @@
       if (!rows.length) return '';
       return '<div class="pick-group"><i>' + g.label + '</i><div class="pick">' +
         rows.map(function (p) {
-          var nm = shortName(p);
-          return '<button type="button" class="pchip' + (chosen[nm] ? ' on' : '') + '" ' +
-            'data-pname="' + esc(nm) + '" data-pkind="' + esc(kindOf(p)) + '">' +
-            esc(nm) + '</button>';
+          return '<button type="button" class="pchip' + (chosen[p.id] ? ' on' : '') + '" ' +
+            'data-pname="' + esc(p.id) + '" data-pkind="' + esc(kindOf(p)) + '">' +
+            esc(shortName(p)) + '</button>';
         }).join('') + '</div></div>';
     }).join('');
     return '<div class="pick-wrap" id="prodPick">' + html + '</div>';
@@ -1279,10 +1278,10 @@
       '<div class="prod-edit">' +
         '<div class="prow"><b>护肤</b>' +
           '<input type="text" id="fSkincare" placeholder="顿号分隔" value="' +
-          esc((d.products.skincare || []).join('、')) + '"></div>' +
+          esc((d.products.skincare || []).map(prodLabel).join('、')) + '"></div>' +
         '<div class="prow"><b>彩妆</b>' +
           '<input type="text" id="fMakeupProd" placeholder="顿号分隔" value="' +
-          esc((d.products.makeup || []).join('、')) + '"></div>' +
+          esc((d.products.makeup || []).map(prodLabel).join('、')) + '"></div>' +
       '</div>' +
       pickerHTML(d.products) +
     '</div>';
@@ -1304,7 +1303,7 @@
       d.products[kind] = arr;
       b.classList.toggle('on', at < 0);
       var box = $(kind === 'makeup' ? '#fMakeupProd' : '#fSkincare', host);
-      if (box) box.value = arr.join('、');
+      if (box) box.value = arr.map(prodLabel).join('、');
     });
   }
 
@@ -1368,8 +1367,8 @@
     if (!d.editingId && !d._touchedProducts) {
       var sk0 = lastProducts('skincare', null);
       var mk0 = lastProducts('makeup', 'makeup');
-      if (!(d.products.skincare || []).length && sk0) d.products.skincare = sk0.list;
-      if (!(d.products.makeup || []).length && mk0) d.products.makeup = mk0.list;
+      if (!(d.products.skincare || []).length && sk0) d.products.skincare = sk0.list.slice();
+      if (!(d.products.makeup || []).length && mk0) d.products.makeup = mk0.list.slice();
       if (!d.carriedFrom && (mk0 || sk0)) d.carriedFrom = (mk0 || sk0).date;
     }
 
@@ -1535,10 +1534,10 @@
     var splitList = function (v) { return v.split(/[,，、]+/).map(function (x) { return x.trim(); }).filter(Boolean); };
     bindPicker(host);
     $('#fSkincare', host).addEventListener('input', function () {
-      d._touchedProducts = true; d.products.skincare = splitList(this.value);
+      d._touchedProducts = true; d.products.skincare = splitList(this.value).map(toToken);
     });
     $('#fMakeupProd', host).addEventListener('input', function () {
-      d._touchedProducts = true; d.products.makeup = splitList(this.value);
+      d._touchedProducts = true; d.products.makeup = splitList(this.value).map(toToken);
     });
 
     var seg = function (sel, key, redraw) {
@@ -2342,15 +2341,16 @@
       var L = (pair[0].products && pair[0].products[kind]) || [];
       var R = (pair[1].products && pair[1].products[kind]) || [];
       var only = function (x, y) {
-        return x.filter(function (n) { return y.indexOf(n) < 0; });
+        var ks = y.map(prodKey);
+        return x.filter(function (n) { return ks.indexOf(prodKey(n)) < 0; });
       };
       var gone = only(L, R), add = only(R, L);
       if (!gone.length && !add.length) return '';
       return '<div class="cmp-diff"><b>' + (kind === 'makeup' ? '彩妆' : '护肤') + '</b>' +
         (gone.length ? '<div class="cd-row"><i>换掉</i><span>' +
-          gone.map(esc).join(' · ') + '</span></div>' : '') +
+          gone.map(prodLabel).map(esc).join(' · ') + '</span></div>' : '') +
         (add.length ? '<div class="cd-row new"><i>换成</i><span>' +
-          add.map(esc).join(' · ') + '</span></div>' : '') +
+          add.map(prodLabel).map(esc).join(' · ') + '</span></div>' : '') +
       '</div>';
     }).join('');
 
@@ -2659,6 +2659,44 @@
       .then(function () { toast('顺带改了 ' + touched + ' 处历史记录'); });
   }
 
+
+  /* ===== 产品名只有一个来源：产品库 =====
+     记录里存的是产品 id，显示时现查现取。
+     以前存的是名字字符串，产品库改了名，时间线和记一条里还是旧的 ——
+     同一件东西三个地方三个叫法。
+
+     老数据存的是名字，这里按名字兜底解析，所以不用迁移也能正常显示。 */
+
+  function prodById(id) {
+    return allProducts().filter(function (p) { return p.id === id; })[0] || null;
+  }
+
+  function prodByLabel(text) {
+    var k = String(text || '').trim();
+    if (!k) return null;
+    return allProducts().filter(function (p) {
+      return p.id === k || shortName(p) === k || p.name === k || p.short === k;
+    })[0] || null;
+  }
+
+  // 记录里的一项 → 显示用的名字
+  function prodLabel(token) {
+    var p = prodById(token) || prodByLabel(token);
+    return p ? shortName(p) : String(token || '');
+  }
+
+  // 记录里的一项 → 用来比对的唯一键（有 id 用 id，没有就用名字）
+  function prodKey(token) {
+    var p = prodById(token) || prodByLabel(token);
+    return p ? p.id : String(token || '');
+  }
+
+  // 界面上填的名字 → 存进记录的值（库里有就存 id）
+  function toToken(text) {
+    var p = prodByLabel(text);
+    return p ? p.id : String(text || '').trim();
+  }
+
   function shortName(p) {
     if (p.short) return p.short;
     var brand = String(p.brand || '').split(/[\s/·]/)[0];
@@ -2898,8 +2936,10 @@
 
   /* 产品详情：在卡片里就地展开，所有字段直接改，不跳新页也不弹窗 */
   var PROD_FIELDS = [
-    { k: 'name',     label: '名称',   type: 'text' },
-    { k: 'short',    label: '简称',   type: 'text', ph: '如 彩棠修容盘 / YSL恒久' },
+    /* 简称是【到处显示的那个名字】，你会改；
+       名称是 AI 认出来的全名，一般不动。所以简称排最前。 */
+    { k: 'short',    label: '显示名', type: 'text', ph: '如 彩棠修容盘 / YSL恒久' },
+    { k: 'name',     label: '全名',   type: 'text', ph: 'AI 识别的完整品名' },
     { k: 'brand',    label: '品牌',   type: 'text' },
     { k: 'category', label: '类别',   type: 'text' },
     { k: 'price',    label: '价格',   type: 'number', unit: '元' },
@@ -2931,6 +2971,8 @@
     /* 名称不算重复：上面标题一行放不下会截断（ESSENCE FOUNDATI…），
        详情里必须能看到完整的名字。品牌、类别、起用日期在标题里是完整的。 */
     var HEADER_FIELDS = { short: 1, brand: 1, category: 1, start: 1, variants: 1 };
+    // 全名和上面显示的名字一样就不重复列
+    if (shortName(p) === p.name) HEADER_FIELDS.name = 1;
 
     // 默认只读，点 ✎ 才切成输入框 —— 一打开就满屏输入框太吵
     var readRows = PROD_FIELDS.filter(function (f) {
@@ -2959,7 +3001,9 @@
     var buys = (p.purchases || []).slice().sort(function (a, b) {
       return a.date < b.date ? 1 : -1;
     });
-    var buyHTML = '<div class="pd-hist"><b>购买记录</b>' +
+    var buyHTML = '<div class="pd-hist">' +
+      '<b>购买记录<button class="ph-add" data-buy-add="' + esc(p.id) + '" ' +
+        'type="button" aria-label="记一次购买">＋</button></b>' +
       (buys.length
         ? buys.map(function (b, i) {
             return '<div class="prod-review">' +
@@ -2974,8 +3018,6 @@
             '</div>';
           }).join('')
         : '<div class="tiny">还没有记录</div>') +
-      '<button class="more-toggle" data-buy-add="' + esc(p.id) + '" type="button" ' +
-        'style="margin-top:4px">＋ 记一次购买</button>' +
       '</div>';
 
     var all = p.reviews || [];
