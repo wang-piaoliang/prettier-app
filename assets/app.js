@@ -372,7 +372,6 @@
       : hideBare
       ? '<button class="bare-cover" type="button" data-peek="' + esc(e.id) + '">' +
           '<span class="bc-label">素颜 · ' + keys.length + ' 张</span>' +
-          '<span class="bc-hint">点开查看</span>' +
         '</button>'
       : '<div class="entry-photos n' + Math.min(shown.length, 4) +
         (expanded ? ' grid' : '') + '" data-id="' + esc(e.id) + '">' +
@@ -402,7 +401,7 @@
       return '<span class="pill accent">' + esc(t) + '</span>';
     }).join('');
 
-    var prod = productsHTML(e.products);
+    var prod = productsHTML(e);
     var folded = !!entryFold[e.id];
 
     /* 时间在照片【上面】：一屏里先看到「这是几点、什么状态」，
@@ -418,6 +417,8 @@
           ((barePeek[e.id] || photoExpand[e.id])
             ? '<button class="hide-btn" type="button" data-hide="' + esc(e.id) + '">收起</button>'
             : '') +
+          '<button class="cmp-pick' + (cmpSel.indexOf(e.id) >= 0 ? ' on' : '') + '" ' +
+            'data-cmp="' + esc(e.id) + '" aria-label="选中对比">比</button>' +
           '<button data-del="' + esc(e.id) + '" aria-label="删除">🗑</button>' +
           '<button data-edit="' + esc(e.id) + '" aria-label="编辑">✎</button>' +
         '</div>' +
@@ -444,6 +445,7 @@
      底下会平白多出一块带内边距的白块，很难看。 */
   /* 每条记录单独折叠。整天折叠用 collapsedDays，这个是「这一组照片」。 */
   var entryFold = {};
+  var prodOpen = {};
 
   function bodyWrap(inner) {
     return inner && inner.trim()
@@ -451,14 +453,55 @@
       : '';
   }
 
-  function productsHTML(p) {
+  /* 上一次记了这类产品的那条记录。
+     彩妆只跟带妆的比 —— 和素颜那条比没有意义。 */
+  function prevUsed(e, kind) {
+    var all = newestFirst((state.data && state.data.entries) || []);
+    var seen = false;
+    for (var i = 0; i < all.length; i++) {
+      var x = all[i];
+      if (x.id === e.id) { seen = true; continue; }
+      if (!seen) continue;                       // 只往前找，不看之后的
+      if (kind === 'makeup' && x.face !== 'makeup') continue;
+      var list = x.products && x.products[kind];
+      if (list && list.length) return list;
+    }
+    return null;
+  }
+
+  /* 默认折叠：天天基本一样，全列出来是噪音。
+     真正有信息量的是【和上次不一样的那几件】—— 标红，收起时也看得见。 */
+  function productsHTML(e) {
+    var p = e.products;
     if (!p) return '';
-    var rows = '';
-    if (p.skincare && p.skincare.length)
-      rows += '<div class="prow"><b>护肤</b><span>' + p.skincare.map(esc).join(' · ') + '</span></div>';
-    if (p.makeup && p.makeup.length)
-      rows += '<div class="prow"><b>彩妆</b><span>' + p.makeup.map(esc).join(' · ') + '</span></div>';
-    return rows ? '<div class="products">' + rows + '</div>' : '';
+    var open = !!prodOpen[e.id];
+    var parts = [], changedAll = [];
+
+    [{ k: 'skincare', label: '护肤' }, { k: 'makeup', label: '彩妆' }].forEach(function (g) {
+      var list = p[g.k] || [];
+      if (!list.length) return;
+      var prev = prevUsed(e, g.k);
+      var isNew = function (n) { return prev ? prev.indexOf(n) < 0 : false; };
+      list.forEach(function (n) { if (isNew(n)) changedAll.push(n); });
+      parts.push('<div class="prow"><b>' + g.label + '</b><span>' +
+        list.map(function (n) {
+          return isNew(n)
+            ? '<em class="p-new">' + esc(n) + '</em>'
+            : esc(n);
+        }).join(' · ') + '</span></div>');
+    });
+    if (!parts.length) return '';
+
+    var n = (p.skincare || []).length + (p.makeup || []).length;
+    var head = '<button class="prod-fold" type="button" data-prod-open="' + esc(e.id) + '">' +
+      '<b>用的产品</b><span class="pf-sum">' +
+      (changedAll.length
+        ? '<em class="p-new">' + changedAll.map(esc).join(' · ') + '</em>'
+        : n + ' 件') +
+      '</span><span class="ml-caret">▾</span></button>';
+
+    return '<div class="products' + (open ? ' open' : '') + '">' + head +
+      (open ? parts.join('') : '') + '</div>';
   }
 
   function makeupHTML(m) {
@@ -579,6 +622,8 @@
         '</section>';
       }).join('');
 
+    host.insertAdjacentHTML('afterbegin', cmpBar());
+
     hydratePhotos(host);
     bindTimelineDrag(host);
 
@@ -586,6 +631,17 @@
       host.dataset.bound = '1';
       bindTimeline(host);
     }
+  }
+
+
+  /* 折叠、选中这类操作会整页重画，浏览器把滚动位置归零，
+     人就被弹到列表顶上去了。重画前后把滚动位置接回来。 */
+  function redrawTimeline() {
+    var y = window.scrollY;
+    go('timeline');
+    // 重画是同步的，但图片是异步填的；下一帧再定位一次更稳
+    window.scrollTo(0, y);
+    requestAnimationFrame(function () { window.scrollTo(0, y); });
   }
 
   function bindTimeline(host) {
@@ -609,18 +665,31 @@
 
 
       var pk = ev.target.closest('[data-peek]');
-      if (pk) { barePeek[pk.dataset.peek] = true; go('timeline'); return; }
+      if (pk) { barePeek[pk.dataset.peek] = true; redrawTimeline(); return; }
 
       var hd = ev.target.closest('[data-hide]');
       if (hd) return collapseEntry(hd.dataset.hide);
 
       /* 点抬头那一行收起/展开这一组照片。
          .entry-act 里是删除和编辑，得先让开，否则点删除会变成折叠。 */
+      var cp = ev.target.closest('[data-cmp]');
+      if (cp) return toggleCompare(cp.dataset.cmp);
+      if (ev.target.closest('#cmpGo')) return renderCompare();
+      if (ev.target.closest('#cmpClear')) { cmpSel = []; return go('timeline'); }
+
+      var po = ev.target.closest('[data-prod-open]');
+      if (po) {
+        var pid2 = po.dataset.prodOpen;
+        prodOpen[pid2] = !prodOpen[pid2];
+        redrawTimeline();
+        return;
+      }
+
       var eh = ev.target.closest('.entry-head.top');
       if (eh && !ev.target.closest('.entry-act')) {
         var eid = eh.closest('.entry').dataset.id;
         entryFold[eid] = !entryFold[eid];
-        go('timeline');
+        redrawTimeline();
         return;
       }
 
@@ -636,7 +705,7 @@
       var mc = ev.target.closest('.more-chip');
       if (mc) {
         photoExpand[mc.closest('.entry').dataset.id] = true;
-        go('timeline');
+        redrawTimeline();
         return;
       }
 
@@ -1206,9 +1275,10 @@
       if (!rows.length) return '';
       return '<div class="pick-group"><i>' + g.label + '</i><div class="pick">' +
         rows.map(function (p) {
-          return '<button type="button" class="pchip' + (chosen[p.name] ? ' on' : '') + '" ' +
-            'data-pname="' + esc(p.name) + '" data-pkind="' + esc(kindOf(p)) + '">' +
-            esc(p.name) + '</button>';
+          var nm = shortName(p);
+          return '<button type="button" class="pchip' + (chosen[nm] ? ' on' : '') + '" ' +
+            'data-pname="' + esc(nm) + '" data-pkind="' + esc(kindOf(p)) + '">' +
+            esc(nm) + '</button>';
         }).join('') + '</div></div>';
     }).join('');
     return '<div class="pick-wrap" id="prodPick">' + html + '</div>';
@@ -1238,6 +1308,7 @@
       var name = b.dataset.pname;
       var kind = b.dataset.pkind === 'makeup' ? 'makeup' : 'skincare';
       var d = state.draft;
+      d._touchedProducts = true;
       var arr = (d.products[kind] || []).slice();
       var at = arr.indexOf(name);
       if (at >= 0) arr.splice(at, 1); else arr.push(name);
@@ -1300,6 +1371,18 @@
     var host = $('#view-compose');
     if (!state.draft) state.draft = blankDraft();
     var d = state.draft;
+
+    /* 沿用上次的产品要在【打开这一页时】算，不能只在建草稿时算。
+       建草稿可能发生在云端数据还没加载完的时候，那时候翻不到历史记录，
+       结果就是「彩妆没有默认带进来」。
+       只在你还没动过产品栏时补，动过就不碰。 */
+    if (!d.editingId && !d._touchedProducts) {
+      var sk0 = lastProducts('skincare', null);
+      var mk0 = lastProducts('makeup', 'makeup');
+      if (!(d.products.skincare || []).length && sk0) d.products.skincare = sk0.list;
+      if (!(d.products.makeup || []).length && mk0) d.products.makeup = mk0.list;
+      if (!d.carriedFrom && (mk0 || sk0)) d.carriedFrom = (mk0 || sk0).date;
+    }
 
     host.innerHTML =
       // 标题只在改旧记录时才有意义：新记一条时下面 tab 已经高亮了，重复
@@ -1462,8 +1545,12 @@
     });
     var splitList = function (v) { return v.split(/[,，、]+/).map(function (x) { return x.trim(); }).filter(Boolean); };
     bindPicker(host);
-    $('#fSkincare', host).addEventListener('input', function () { d.products.skincare = splitList(this.value); });
-    $('#fMakeupProd', host).addEventListener('input', function () { d.products.makeup = splitList(this.value); });
+    $('#fSkincare', host).addEventListener('input', function () {
+      d._touchedProducts = true; d.products.skincare = splitList(this.value);
+    });
+    $('#fMakeupProd', host).addEventListener('input', function () {
+      d._touchedProducts = true; d.products.makeup = splitList(this.value);
+    });
 
     var seg = function (sel, key, redraw) {
       var node = $(sel, host);
@@ -2184,6 +2271,93 @@
     });
   }
 
+
+  /* ========== 两条记录对比 ==========
+     控制变量法：改一两个产品，看妆效差别。
+     所以对比要同时给出【照片并排】和【产品差在哪】。 */
+  var cmpSel = [];
+
+  function toggleCompare(id) {
+    var at = cmpSel.indexOf(id);
+    if (at >= 0) cmpSel.splice(at, 1);
+    else {
+      cmpSel.push(id);
+      if (cmpSel.length > 2) cmpSel.shift();   // 只留最近选的两条
+    }
+    redrawTimeline();
+    if (cmpSel.length === 2) renderCompare();
+  }
+
+  function cmpBar() {
+    if (!cmpSel.length) return '';
+    return '<div class="cmp-bar">' +
+      '<span>已选 ' + cmpSel.length + '/2</span>' +
+      (cmpSel.length === 2
+        ? '<button type="button" id="cmpGo">看对比</button>' : '') +
+      '<button type="button" id="cmpClear">取消</button>' +
+    '</div>';
+  }
+
+  function entryById(id) {
+    return ((state.data && state.data.entries) || [])
+      .filter(function (x) { return x.id === id; })[0];
+  }
+
+  function renderCompare() {
+    var a1 = entryById(cmpSel[0]), b1 = entryById(cmpSel[1]);
+    if (!a1 || !b1) return;
+    // 早的放左边，晚的放右边 —— 看变化要有方向
+    var pair = [a1, b1].sort(function (x, y) {
+      return String(x.at || x.date).localeCompare(String(y.at || y.date));
+    });
+
+    var col = function (e) {
+      var ph = (e.photos || []).slice(0, 2);
+      return '<div class="cmp-col">' +
+        '<div class="cmp-when">' + esc(fmtDate(e.date)) + '<i>' +
+          esc((SLOT[slotOf(e)] || '') + ' ' + (fmtTime(e.at) || '')) + '</i></div>' +
+        '<div class="cmp-ph">' + ph.map(function (k) {
+          return '<img data-key="' + esc(k) + '" alt="">';
+        }).join('') + '</div>' +
+        (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
+      '</div>';
+    };
+
+    var diffRows = ['skincare', 'makeup'].map(function (kind) {
+      var L = (pair[0].products && pair[0].products[kind]) || [];
+      var R = (pair[1].products && pair[1].products[kind]) || [];
+      var only = function (x, y) {
+        return x.filter(function (n) { return y.indexOf(n) < 0; });
+      };
+      var gone = only(L, R), add = only(R, L);
+      if (!gone.length && !add.length) return '';
+      return '<div class="cmp-diff"><b>' + (kind === 'makeup' ? '彩妆' : '护肤') + '</b>' +
+        (gone.length ? '<div class="cd-row"><i>换掉</i><span>' +
+          gone.map(esc).join(' · ') + '</span></div>' : '') +
+        (add.length ? '<div class="cd-row new"><i>换成</i><span>' +
+          add.map(esc).join(' · ') + '</span></div>' : '') +
+      '</div>';
+    }).join('');
+
+    var same = !diffRows;
+    var host = $('#view-trend');
+    host.innerHTML =
+      '<div class="section-title">对比</div>' +
+      '<div class="cmp-grid">' + col(pair[0]) + col(pair[1]) + '</div>' +
+      '<div class="card" style="margin-top:16px">' +
+        (same
+          ? '<div class="tiny">两次用的产品一样 —— 差别不来自产品。</div>'
+          : diffRows) +
+      '</div>' +
+      '<button class="btn ghost" id="cmpBack" type="button" style="margin-top:18px">返回时间线</button>';
+
+    state.view = 'trend';
+    $$('.view').forEach(function (v) { v.classList.remove('active'); });
+    host.classList.add('active');
+    hydratePhotos(host);
+    on('#cmpBack', 'click', function () { cmpSel = []; go('timeline'); });
+  }
+
   /* ================= 产品库 ================= */
 
   function allProducts() { return (state.data && state.data.products) || []; }
@@ -2310,7 +2484,9 @@
       '<button class="more-toggle" id="addProdBtn" type="button">手动添加一件</button>';
 
     $('#scanBtn', host).addEventListener('click', function () { $('#prodInput').click(); });
-    $('#addProdBtn', host).addEventListener('click', addProductManually);
+    $('#addProdBtn', host).addEventListener('click', function () {
+      addProductManually(this);
+    });
 
     if (!host.dataset.bound) {
       host.dataset.bound = '1';
@@ -2342,8 +2518,25 @@
     hydratePhotos(host);
   }
 
+
+  /* 显示名 = 品牌 + 产品，几个字说清楚。
+     用户原话：「很多写的就是高光修容盘，这有啥用，我得知道品牌，以后才能对比」
+     ——「彩棠修容盘」「covermark粉底霜」「YSL恒久」「雅诗兰黛DW」这种。
+     `short` 是可编辑字段，没填就用品牌+品名拼一个兜底。 */
+  function shortName(p) {
+    if (p.short) return p.short;
+    var brand = String(p.brand || '').split(/[\s/·]/)[0];
+    var name = String(p.name || '');
+    // 品名里已经带了品牌就不重复拼
+    if (brand && name.toLowerCase().indexOf(brand.toLowerCase()) >= 0) return name;
+    return (brand + name).slice(0, 18);
+  }
+
   function prodCardHTML(p) {
-    var sub = [p.brand, p.category].filter(Boolean).join(' · ');
+    var disp = shortName(p);
+    // 显示名里已经有品牌了，副标题只留类别，不重复
+    var sub = [disp.indexOf(p.brand || '\u0000') >= 0 ? '' : p.brand, p.category]
+      .filter(Boolean).join(' · ');
     var dates = [];
     if (p.start) dates.push('起 ' + fmtDate(p.start));
     if (p.status === 'retired' && p.end) dates.push('停 ' + fmtDate(p.end));
@@ -2352,7 +2545,7 @@
 
     return '<div class="prod-card">' +
       '<div class="pc-main" data-detail-prod="' + esc(p.id) + '">' +
-        '<div class="nm">' + esc(p.name) + '</div>' +
+        '<div class="nm">' + esc(disp) + '</div>' +
         (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') +
         (dates.length ? '<div class="sub">' + esc(dates.join(' · ')) + '</div>' : '') +
       '</div>' +
@@ -2570,6 +2763,7 @@
   /* 产品详情：在卡片里就地展开，所有字段直接改，不跳新页也不弹窗 */
   var PROD_FIELDS = [
     { k: 'name',     label: '名称',   type: 'text' },
+    { k: 'short',    label: '简称',   type: 'text', ph: '如 彩棠修容盘 / YSL恒久' },
     { k: 'brand',    label: '品牌',   type: 'text' },
     { k: 'category', label: '类别',   type: 'text' },
     { k: 'price',    label: '价格',   type: 'number', unit: '元' },
@@ -2597,13 +2791,16 @@
     var inBuys = function (k) {
       return buysAll.some(function (b) { return String(b[k] || '') === String(p[k] || ''); });
     };
-    var HEADER_FIELDS = { name: 1, brand: 1, category: 1, start: 1 };
+    /* 名称不算重复：上面标题一行放不下会截断（ESSENCE FOUNDATI…），
+       详情里必须能看到完整的名字。品牌、类别、起用日期在标题里是完整的。 */
+    var HEADER_FIELDS = { short: 1, brand: 1, category: 1, start: 1 };
 
     // 默认只读，点 ✎ 才切成输入框 —— 一打开就满屏输入框太吵
     var readRows = PROD_FIELDS.filter(function (f) {
       if (p[f.k] == null || p[f.k] === '') return false;
       if (HEADER_FIELDS[f.k]) return false;
       if ((f.k === 'price' || f.k === 'size') && buysAll.length && inBuys(f.k)) return false;
+      if (f.k === 'spec' && buysAll.length) return false;   // 已并进购买记录那一行
       return true;
     }).map(function (f) {
       return '<div class="pd-row read"><span>' + esc(f.label) + '</span>' +
@@ -2630,7 +2827,11 @@
         ? buys.map(function (b, i) {
             return '<div class="prod-review">' +
               '<b>' + esc(fmtDate(b.date)) + '</b>' +
-              '<span>' + [b.price ? b.price + '元' : '', b.size || '', b.where || '']
+              /* 一行写完：价格 · 规格 · 色号参数 · 渠道。
+                 色号跟着「买的这一次」走 —— 回购换色号是常事。 */
+              '<span>' + [b.price ? b.price + '元' : '', b.size || '',
+                          b.spec || (i === buys.length - 1 ? p.spec : '') || '',
+                          b.where || '']
                 .filter(Boolean).map(esc).join(' · ') + '</span>' +
               '<button class="rv-edit" data-buy-del="' + i + '" aria-label="删">×</button>' +
             '</div>';
@@ -2664,20 +2865,24 @@
           '<button class="ie-ok" type="button">保存</button>' +
         '</div>' +
       '</div>' +
-      '<div class="pd-shoot">' +
-        '<button class="more-toggle" type="button" data-shoot="' + esc(p.id) + '">' +
-          '＋ 拍张照补充信息' +
-        '</button>' +
+      hist + buyHTML +
+      /* 照片小节：＋ 挂在标题右边，识别到的信息自动补进产品和购买记录 */
+      '<div class="pd-hist"><b>照片' +
+        '<button class="ph-add" data-shoot="' + esc(p.id) + '" type="button" ' +
+          'aria-label="拍张照补充信息">＋</button></b>' +
         '<span class="tiny pd-shoot-msg"></span>' +
-      '</div>' + buyHTML + hist +
-      ((p.photos || []).length
-        ? '<div class="pd-hist"><b>识别用的照片</b>' +
-          '<div class="pc-shots">' +
-          p.photos.map(function (path, i) {
-            return '<button class="pc-shot" type="button" data-shot="' + i + '">' +
-              '<img data-key="' + esc(path) + '" alt=""></button>';
-          }).join('') + '</div></div>'
-        : '') +
+        ((p.photos || []).length
+          ? '<div class="pc-shots">' +
+            p.photos.map(function (path, i) {
+              return '<span class="pc-cell">' +
+                '<button class="pc-shot" type="button" data-shot="' + i + '">' +
+                  '<img data-key="' + esc(path) + '" alt=""></button>' +
+                '<button class="pc-del" type="button" data-shot-del="' + i + '" ' +
+                  'aria-label="删掉这张">×</button>' +
+              '</span>';
+            }).join('') + '</div>'
+          : '') +
+      '</div>' +
       '</div>');
 
     card.appendChild(box);
@@ -2692,6 +2897,8 @@
       if (ba) return openBuyEditor(id, ba);
       var bd = ev.target.closest('[data-buy-del]');
       if (bd) return deleteBuy(id, Number(bd.dataset.buyDel));
+      var sx = ev.target.closest('[data-shot-del]');
+      if (sx) return deleteProductShot(id, Number(sx.dataset.shotDel));
       var sp = ev.target.closest('[data-shot]');
       if (sp) return openPhotoList(p.photos, Number(sp.dataset.shot));
       var sh = ev.target.closest('[data-shoot]');
@@ -2777,21 +2984,61 @@
       .catch(function (e) { toast('失败：' + (e.message || e), true); });
   }
 
-  function addProductManually() {
-    var name = prompt('产品名（例：某某氨基酸洁面）');
-    if (!name) return;
-    var brand = prompt('品牌（可留空）') || '';
-    var k = prompt('类别：1=彩妆　2=护肤　3=仪器', '2');
-    var kind = k === '1' ? 'makeup' : k === '3' ? 'device' : 'skincare';
-    var start = prompt('开始使用/购买日期（留空就用今天）：', todayISO()) || todayISO();
-    var p = {
-      id: 'p' + Date.now().toString(36),
-      name: name.trim(), brand: brand.trim(), kind: kind,
-      status: 'using', start: start, addedAt: todayISO(),
-    };
-    saveProducts(allProducts().concat([p]), '产品库：添加 ' + p.name)
-      .then(function () { toast('已入库'); })
-      .catch(function (e) { toast('失败：' + e.message, true); });
+  /* 手动加一件：就地展开完整表单，字段和产品详情的编辑态完全一致。
+     以前是连着四个 prompt() 弹窗、且只能填名字和品牌 ——
+     App 里其它地方都是页内编辑，只有这里弹窗，交互不一致。 */
+  function addProductManually(btn) {
+    if (btn.nextElementSibling && btn.nextElementSibling.classList.contains('inline-edit')) {
+      return btn.nextElementSibling.remove();
+    }
+    var rows = PROD_FIELDS.map(function (f) {
+      return '<label class="pd-row"><span>' + esc(f.label) + '</span>' +
+        '<input type="' + f.type + '" data-f="' + f.k + '" ' +
+        (f.ph ? 'placeholder="' + esc(f.ph) + '" ' : '') +
+        (f.k === 'start' ? 'value="' + esc(todayISO()) + '" ' : '') + '>' +
+        (f.unit ? '<i>' + f.unit + '</i>' : '') + '</label>';
+    }).join('');
+
+    var box = el('<div class="inline-edit">' +
+      '<div class="segmented" id="newKind">' +
+        KINDS.map(function (k, i) {
+          return '<button type="button" data-v="' + k.key + '"' +
+            (i === 1 ? ' class="on"' : '') + '>' + esc(k.label) + '</button>';
+        }).join('') +
+      '</div>' + rows +
+      '<div class="ie-act">' +
+        '<button class="ie-cancel" type="button">取消</button>' +
+        '<button class="ie-ok" type="button">入库</button>' +
+      '</div></div>');
+    btn.insertAdjacentElement('afterend', box);
+
+    var kind = 'skincare';
+    box.querySelector('#newKind').addEventListener('click', function (ev) {
+      var b = ev.target.closest('button');
+      if (!b) return;
+      kind = b.dataset.v;
+      Array.prototype.forEach.call(this.children, function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+    });
+
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var p = { id: 'p' + Date.now().toString(36), kind: kind,
+                status: 'using', addedAt: todayISO() };
+      $$('input[data-f]', box).forEach(function (inp) {
+        var v = inp.value.trim();
+        if (!v) return;
+        p[inp.dataset.f] = inp.type === 'number' ? Number(v) : v;
+      });
+      if (!p.name) return toast('至少写个名字', true);
+      if (!p.start) p.start = todayISO();
+
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      box.remove();
+      saveProducts(allProducts().concat([p]), '产品库：添加 ' + p.name)
+        .then(function () { toast('已入库'); refresh('products'); })
+        .catch(function (e) { toast('失败：' + e.message, true); });
+    });
   }
 
 
@@ -2803,17 +3050,22 @@
     var size = x.size || '';
     var date = /^\d{4}-\d{2}-\d{2}$/.test(x.boughtAt || '') ? x.boughtAt : todayISO();
     if (price == null && !size && !x.where) return null;
-    var b = { date: date };
+    var b = { date: date, at: nowLocal() };   // at 是记录动作的时间点，展示只用 date
     if (price != null && !isNaN(price)) b.price = price;
     if (size) b.size = size;
     if (x.where) b.where = x.where;
+    if (x.spec) b.spec = x.spec;
     return b;
   }
 
-  // 同一张图可能被传两次，别记成两笔
+  /* 同一单只记一次。
+     判断「是不是同一单」看订单本身：日期 + 价格 + 规格都一样就是同一单 ——
+     同一张截图传两次、或同一单里截了两张图，都不该变成两条记录。 */
   function hasSameBuy(list, b) {
     return (list || []).some(function (o) {
-      return o.date === b.date && o.price === b.price && (o.size || '') === (b.size || '');
+      return o.date === b.date &&
+             (o.price == null ? '' : o.price) === (b.price == null ? '' : b.price) &&
+             (o.size || '') === (b.size || '');
     });
   }
 
@@ -2861,6 +3113,27 @@
     }).catch(function (e) {
       statusEl.textContent = '失败：' + (e.message || e);
     });
+  }
+
+
+  /* 反复上传同一件产品，识别用的原图会攒一堆重复的。
+     删除要连仓库里的文件一起删 —— 只从列表里摘掉，图还占着空间。 */
+  function deleteProductShot(pid, idx) {
+    var p = allProducts().filter(function (x) { return x.id === pid; })[0];
+    if (!p || !p.photos || !p.photos[idx]) return;
+    var path = p.photos[idx];
+    if (!confirm('删掉这张识别用的照片？')) return;
+
+    var next = allProducts().map(function (x) {
+      if (x.id !== pid) return x;
+      return Object.assign({}, x, {
+        photos: x.photos.filter(function (_, i) { return i !== idx; }),
+      });
+    });
+    saveProducts(next, '产品库：删掉一张识别照片')
+      .then(function () { return GitStore.commitDelete([path], '删除照片 ' + path); })
+      .then(function () { refresh('products'); })
+      .catch(function (e) { toast('删除失败：' + (e.message || e), true); });
   }
 
   /* 拍产品 → AI 识别 → 只把【库里没有的】加进去 */
@@ -3000,7 +3273,7 @@
     lb.keys = keys;
     lb.i = Math.max(0, Math.min(startIdx || 0, keys.length - 1));
 
-    $('#lightbox').hidden = false;
+    openLb();
     renderLightbox();
   }
 
@@ -3010,8 +3283,20 @@
     if (!paths || !paths.length) return;
     lb.keys = paths.slice();
     lb.i = Math.max(0, Math.min(startIdx || 0, paths.length - 1));
-    $('#lightbox').hidden = false;
+    openLb();
     renderLightbox();
+  }
+
+  function openLb() {
+    $('#lightbox').hidden = false;
+    document.body.classList.add('no-scroll');
+    resetZoom();
+  }
+
+  function closeLb() {
+    $('#lightbox').hidden = true;
+    document.body.classList.remove('no-scroll');
+    resetZoom();
   }
 
   function renderLightbox() {
@@ -3035,9 +3320,76 @@
   }
 
   function step(d) {
+    resetZoom();
     if (lb.keys.length < 2) return;
     lb.i = (lb.i + d + lb.keys.length) % lb.keys.length;
     renderLightbox();
+  }
+
+
+  /* 双指放大只作用在照片上。
+     iOS 默认的双指缩放是【整页】的，看毛孔时背景跟着一起放大很难受；
+     所以给灯箱关掉浏览器手势（touch-action: none），自己算缩放和拖动。 */
+  var zm = { s: 1, x: 0, y: 0, d0: 0, s0: 1, px: 0, py: 0, moved: false };
+
+  function applyZoom() {
+    var img = $('#lbImg');
+    if (!img) return;
+    img.style.transform = 'translate(' + zm.x + 'px,' + zm.y + 'px) scale(' + zm.s + ')';
+  }
+
+  function resetZoom() {
+    zm.s = 1; zm.x = 0; zm.y = 0; zm.moved = false;
+    applyZoom();
+  }
+
+  function dist(t) {
+    var dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function bindZoom() {
+    var box = $('#lightbox');
+
+    box.addEventListener('touchstart', function (ev) {
+      if (ev.touches.length === 2) {
+        zm.d0 = dist(ev.touches);
+        zm.s0 = zm.s;
+        zm.moved = true;
+      } else if (ev.touches.length === 1 && zm.s > 1) {
+        zm.px = ev.touches[0].clientX - zm.x;
+        zm.py = ev.touches[0].clientY - zm.y;
+      }
+    }, { passive: false });
+
+    box.addEventListener('touchmove', function (ev) {
+      if (ev.touches.length === 2) {
+        ev.preventDefault();
+        zm.s = Math.max(1, Math.min(6, zm.s0 * (dist(ev.touches) / (zm.d0 || 1))));
+        if (zm.s === 1) { zm.x = 0; zm.y = 0; }
+        applyZoom();
+      } else if (ev.touches.length === 1 && zm.s > 1) {
+        ev.preventDefault();
+        zm.x = ev.touches[0].clientX - zm.px;
+        zm.y = ev.touches[0].clientY - zm.py;
+        zm.moved = true;
+        applyZoom();
+      }
+    }, { passive: false });
+
+    // 双击放大 / 还原
+    var lastTap = 0;
+    box.addEventListener('touchend', function (ev) {
+      if (ev.touches.length) return;
+      var now = ev.timeStamp;
+      if (now - lastTap < 300) {
+        zm.s = zm.s > 1 ? 1 : 2.5;
+        zm.x = 0; zm.y = 0;
+        zm.moved = true;
+        applyZoom();
+      }
+      lastTap = now;
+    });
   }
 
   function bindLightbox() {
@@ -3056,13 +3408,23 @@
       if (ev.target.closest('#lbNext')) { step(1); return; }
       /* 点图片本身也退出 —— 大部分看图应用都是这样，
          点背景才关会让人以为卡住了。左右翻页有专门的按钮和横滑。 */
-      if (ev.target.id === 'lightbox' || ev.target.id === 'lbImg' ||
-          ev.target.closest('#lbClose')) box.hidden = true;
+      /* 点照片：左三分之一上一张、右三分之一下一张、中间退出。
+         放大状态下不响应 —— 那时候手指是在看细节，不是在翻页。 */
+      if (ev.target.id === 'lbImg') {
+        if (zm.s > 1 || zm.moved) { zm.moved = false; return; }
+        var r = ev.target.getBoundingClientRect();
+        var f = (ev.clientX - r.left) / r.width;
+        if (f < 0.33) step(-1);
+        else if (f > 0.67) step(1);
+        else closeLb();
+        return;
+      }
+      if (ev.target.id === 'lightbox' || ev.target.closest('#lbClose')) closeLb();
     });
 
     document.addEventListener('keydown', function (ev) {
       if (box.hidden) return;
-      if (ev.key === 'Escape') box.hidden = true;
+      if (ev.key === 'Escape') closeLb();
       if (ev.key === 'ArrowLeft') step(-1);
       if (ev.key === 'ArrowRight') step(1);
     });
@@ -3141,6 +3503,46 @@
       '--appbar-h', Math.round(bar.getBoundingClientRect().height) + 'px');
   }
 
+
+  /* 装成桌面图标之后，iOS 不会主动检查更新，人就一直用着旧版本 ——
+     表现是「明明改好的功能说没做」。主动比一次版本号，不一样就提示。 */
+  function checkForUpdate() {
+    if (!window.PRETTIER_BUILD) return;
+    fetch('assets/version.js?t=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.text(); })
+      .then(function (t) {
+        /* 手工切字符串而不是用正则 ——
+           发布前的检查脚本会先把字符串剥掉再扫函数调用，
+           正则字面量里出现引号会让它错位，整份文件都判错。 */
+        var i = t.indexOf('v:');
+        if (i < 0) return;
+        var rest = t.slice(i + 2).replace(/^\s+/, '');
+        var q = rest.charAt(0);
+        var ver = rest.slice(1, rest.indexOf(q, 1));
+        if (!ver || ver === PRETTIER_BUILD.v) return;
+        var bar = document.createElement('div');
+        bar.id = 'newver';
+        bar.innerHTML = '<span>有新版本 ' + esc(ver) + '（当前 ' +
+          esc(PRETTIER_BUILD.v) + '）</span><button type="button">立即更新</button>';
+        document.body.appendChild(bar);
+        bar.querySelector('button').addEventListener('click', function () {
+          // 连 Service Worker 的缓存一起清，否则刷新还是拿旧文件
+          if (navigator.serviceWorker) {
+            navigator.serviceWorker.getRegistrations().then(function (rs) {
+              rs.forEach(function (r) { r.unregister(); });
+            });
+          }
+          if (window.caches) {
+            caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); })
+              .then(function () { location.reload(); });
+          } else {
+            location.reload();
+          }
+        });
+      })
+      .catch(function () {});
+  }
+
   function init() {
     applyTheme(get(LS.theme, 'light'));
     syncAppbarHeight();
@@ -3192,6 +3594,8 @@
 
     // 灯箱：点开后可左右滑动看同一条记录里的全部照片
     bindLightbox();
+    bindZoom();
+    checkForUpdate();
 
     if (state.owner && state.repo) {
       showApp();
