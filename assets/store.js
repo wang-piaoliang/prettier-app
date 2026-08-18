@@ -151,7 +151,7 @@
   var K_SNAP = '__snapshot';   // { json: {path: 值}, tree: {path: sha} }
   var K_OUT  = '__outbox';     // { photos: [path], deletes: [path], dirty: [path] }
 
-  var L = { on: false, ready: false, json: {}, tree: {}, photos: [], deletes: [], dirty: [] };
+  var L = { on: false, ready: false, json: {}, tree: {}, photos: [], deletes: [], dirty: [], fresh: [] };
 
   function localLoad() {
     if (L.ready) return Promise.resolve(L);
@@ -162,6 +162,7 @@
       L.photos = out.photos || [];
       L.deletes = out.deletes || [];
       L.dirty = out.dirty || [];
+      L.fresh = out.fresh || [];
       L.ready = true;
       return L;
     });
@@ -170,7 +171,7 @@
   function localSave() {
     return Promise.all([
       cachePut(K_SNAP, { json: L.json, tree: L.tree }),
-      cachePut(K_OUT, { photos: L.photos, deletes: L.deletes, dirty: L.dirty }),
+      cachePut(K_OUT, { photos: L.photos, deletes: L.deletes, dirty: L.dirty, fresh: L.fresh }),
     ]);
   }
 
@@ -210,6 +211,7 @@
     return localLoad().then(function () {
       return files.reduce(function (chain, f) {
         return chain.then(function () {
+          uniqPush(L.fresh, f.path);     // 本地新建的，云端还没有
           if (f.blob) {
             var key = 'local:' + f.path;
             L.tree[f.path] = key;          // photoURL 靠 tree 找 sha，本地也给一个
@@ -226,11 +228,14 @@
   function localDelete(paths) {
     return localLoad().then(function () {
       paths.forEach(function (p) {
-        var wasLocalOnly = L.photos.indexOf(p) >= 0;
+        // 本地这一轮才建出来的，云端从来没有过，不用记删除
+        var localOnly = L.photos.indexOf(p) >= 0 || L.fresh.indexOf(p) >= 0;
         L.photos = L.photos.filter(function (x) { return x !== p; });
+        L.fresh = L.fresh.filter(function (x) { return x !== p; });
+        L.dirty = L.dirty.filter(function (x) { return x !== p; });
         delete L.tree[p];
-        // 只有云端真有这个文件才需要记一笔删除
-        if (!wasLocalOnly) uniqPush(L.deletes, p);
+        delete L.json[p];
+        if (!localOnly) uniqPush(L.deletes, p);
       });
       return localSave();
     });
@@ -292,12 +297,23 @@
         })
         .then(function () {
           if (!L.deletes.length) return null;
-          step('清理已删除的');
-          return commitDelete(L.deletes.slice(), '补传：删除 ' + L.deletes.length + ' 个文件');
+          /* 只删云端真有的。
+             删一个不存在的路径，GitHub 会用 422 GitRPC::BadObjectState 顶回来，
+             整个补传就卡在这儿了 —— 而这类"幽灵删除"来源很多：
+             本地建了又删的临时文件、别的设备已经删过的照片。 */
+          step('核对云端');
+          return head().then(tree).then(function (t) {
+            var real = {};
+            (t.tree || []).forEach(function (n) { real[n.path] = 1; });
+            var todo = L.deletes.filter(function (p) { return real[p]; });
+            if (!todo.length) return null;
+            step('清理已删除的');
+            return commitDelete(todo, '补传：删除 ' + todo.length + ' 个文件');
+          });
         })
         .then(function () {
           var done = { photos: L.photos.length, files: L.dirty.length, deletes: L.deletes.length };
-          L.photos = []; L.dirty = []; L.deletes = [];
+          L.photos = []; L.dirty = []; L.deletes = []; L.fresh = [];
           // 快照也清掉：下次再离线时重新拿刚同步下来的内容打底，而不是这份旧的
           L.json = {}; L.tree = {};
           L.on = false;
@@ -518,6 +534,13 @@
   /* 自检：分别验证「能读」和「能写」，直接指出问题出在哪 */
   function selftest() {
     var out = { read: null, write: null };
+    /* 全程强制走网络。
+       早先没加这一句：本地模式下 head/commit/commitDelete 全被本地接管，
+       探针文件写进了本地又删掉，selftest 报告「能读能写」——
+       可它根本没碰过 GitHub。而且还留下一条「去云端删 .probe」的待办，
+       补传时删一个云端不存在的文件，撞 422 GitRPC::BadObjectState。 */
+    forceRemote = true;
+    var finish = function (r) { forceRemote = false; return r; };
     // 先问配额 —— 这个接口不计入限额，被限流时也答得出来
     return fetch(API + '/rate_limit', {
       headers: cfg.token ? { Authorization: 'Bearer ' + cfg.token } : {},
@@ -543,13 +566,13 @@
       return commitDelete(['.probe'], '连接自检：清理');
     }).then(function () {
       out.cleanup = '✅ 已清理';
-      return out;
+      return finish(out);
     }).catch(function (err) {
       out.error = err.message;
       out.step = err.step || '';
       if (!out.read) out.read = '❌ 读失败';
       else if (!out.write) out.write = '❌ 写失败';
-      return out;
+      return finish(out);
     });
   }
 
