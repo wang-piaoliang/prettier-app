@@ -1054,7 +1054,7 @@ html, body { max-width: 100%; overflow-x: clip; }
    否则人会以为已经存到云上了。 */
 #pending {
   position: sticky;
-  top: var(--appbar-h, 96px);
+  top: var(--appbar-h, 60px);
   z-index: 8;
   display: flex;
   align-items: center;
@@ -1144,11 +1144,6 @@ html, body { max-width: 100%; overflow-x: clip; }
 
 /* 每组照片单独折叠：点抬头那一行 */
 .entry-head.top { cursor: pointer; }
-.entry-caret {
-  flex: none; margin-left: 6px; color: var(--ink-faint); font-size: 12px;
-  transition: transform .18s ease;
-}
-.entry.folded .entry-caret { transform: rotate(-90deg); }
 .entry.folded .entry-head.top { padding-bottom: 13px; }
 .fold-n { font-family: var(--sans); font-size: 12px; color: var(--ink-faint); }
 #lbImg { cursor: zoom-out; }
@@ -1243,7 +1238,9 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
 .cd-row.new span { color: var(--focus); }
 
 /* 选择模式 */
-.glyphbtn.on { color: var(--accent); }
+.iconbtn.on {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
 .entry.selectable { cursor: pointer; }
 .entry.selectable .entry-head.top { background: var(--accent-bg); }
 .entry.picked { outline: 2px solid var(--accent); outline-offset: -1px; }

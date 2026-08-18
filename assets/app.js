@@ -415,7 +415,6 @@
           '<button data-edit="' + esc(e.id) + '" aria-label="编辑">✎</button>' +
         '</div>' +
         (folded && keys.length ? '<span class="fold-n">' + keys.length + ' 张</span>' : '') +
-        '<span class="ml-caret entry-caret">▾</span>' +
       '</div>' +
       (folded ? '' : photos) +
       (folded ? '' : bodyWrap(
@@ -1838,7 +1837,8 @@
       renderQueue();
       renderPending();
       // 悄悄和云端对齐，不打断正在看的页面
-      return loadData().then(function () { refresh('timeline'); });
+      var back = job.refreshView || 'timeline';
+      return loadData().then(function () { refresh(back); });
     }).catch(function (err) {
       job.state = 'failed';
       job.error = (err.step ? '「' + err.step + '」' : '') + (err.message || err);
@@ -1849,6 +1849,13 @@
   }
 
   function runJob(job) {
+    /* 带 run 的是自定义任务（比如产品识别）。
+       放进同一个队列，切页面也照跑完 —— 以前识别写在产品页那个元素里，
+       一切走就断了，等于白传。 */
+    if (job.run) {
+      return job.run(function (t) { job.step = t; renderQueue(); });
+    }
+
     /* 提交前重新读一次云端的 entries.json，而不是用内存里的。
        两次上传排队时，第二条如果拿的是排队那一刻的旧列表，
        会把第一条刚写进去的记录覆盖掉。 */
@@ -2065,13 +2072,16 @@
   }
 
 
+  /* 时间线上这颗按钮是「选择两条来对比」，其它页面才是设置。
+     用文字胶囊，和旁边的「刷新」「趋势」一套 ——
+     ☑ ✕ 这类符号在不同系统里字形差别很大，出来的样子不受控。 */
   function syncTopBtn() {
     var b = $('#settingsBtn');
     if (!b) return;
     var pick = state.view === 'timeline';
-    b.textContent = pick ? (selectMode ? '✕' : '☑') : '◎';
+    b.textContent = pick ? (selectMode ? '完成' : '选择') : '◎';
+    b.className = pick ? 'iconbtn' + (selectMode ? ' on' : '') : 'glyphbtn';
     b.setAttribute('aria-label', pick ? (selectMode ? '退出选择' : '选择对比') : '设置');
-    b.classList.toggle('on', pick && selectMode);
   }
 
   function go(view) {
@@ -2080,6 +2090,7 @@
     $$('.tabbar button').forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
     window.scrollTo(0, 0);
     (RENDER[view] || function () {})();
+    syncAppbarHeight();
     if (view !== 'timeline') { selectMode = false; cmpSel = []; }
     syncTopBtn();
     hydratePhotos(document);
@@ -3282,12 +3293,26 @@
     if (!files || !files.length) return;
     if (!ensureKey()) return;
 
-    var out = $('#scanOut');
-    out.innerHTML = '<div class="card" style="margin-bottom:18px"><div class="tiny">识别中…</div></div>';
+    var n = files.length;
+    var picked = Array.prototype.slice.call(files);
+    toast('已加入后台识别（' + n + ' 张）');
+    enqueue({
+      label: '识别 ' + n + ' 张产品照',
+      refreshView: 'products',
+      run: function (step) { return scanProductsJob(picked, step); },
+    });
+  }
 
-    Promise.all(Array.prototype.slice.call(files).map(function (f) {
+  function scanProductsJob(files, step) {
+    var out = $('#scanOut') || document.createElement('div');
+    step('压缩照片');
+
+    return Promise.all(files.map(function (f) {
       return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
     })).then(function (blobs) {
+      step('AI 识别中');
+      return blobs;
+    }).then(function (blobs) {
       return PrettierAI.identifyProducts(blobs).then(function (found) {
         return { blobs: blobs, found: found };
       });
@@ -3392,8 +3417,8 @@
         shots)
         .then(function () { toast('新增 ' + added.length + ' 件'); });
     }).catch(function (err) {
-      out.innerHTML = '';
-      toast('识别失败：' + (err.message || err), true);
+      if (out.innerHTML !== undefined) out.innerHTML = '';
+      throw err;   // 抛给队列，让它显示成失败并能重试
     });
   }
 
@@ -3602,6 +3627,10 @@
   function showApp() {
     $('#gate').hidden = true;
     $('#app').hidden = false;
+    syncAppbarHeight();
+    if (window.ResizeObserver) {
+      new ResizeObserver(syncAppbarHeight).observe($('.appbar'));
+    }
     loadData().then(function () { go('timeline'); })
       .catch(function (err) { toast(String(err.message || err), true); });
   }
@@ -3649,11 +3678,16 @@
 
   /* 顶栏高度随安全区变化，量出来写进 CSS 变量，
      吸顶的日期栏就不会被它盖住 */
+  /* 日期条要吸在顶栏【下面】，所以得知道顶栏多高。
+     ⚠️ 量到 0 千万不能写进去 —— init() 跑的时候 #app 还是 hidden，
+     顶栏高度是 0，写进去日期条就吸到视口最顶上，
+     正好被顶栏盖住：看起来就是「日期栏没吸顶」。 */
   function syncAppbarHeight() {
     var bar = $('.appbar');
     if (!bar) return;
-    document.documentElement.style.setProperty(
-      '--appbar-h', Math.round(bar.getBoundingClientRect().height) + 'px');
+    var h = Math.round(bar.getBoundingClientRect().height);
+    if (!h) return;
+    document.documentElement.style.setProperty('--appbar-h', h + 'px');
   }
 
 
