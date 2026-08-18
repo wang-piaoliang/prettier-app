@@ -2429,8 +2429,94 @@
     return 999;   // 没匹配上的算「其他」，排最后
   }
 
+  /* 手动拖过的按手动顺序，没拖过的按使用顺序（粉底→遮瑕→…）。
+     ord 只在你真的拖动之后才写，所以新加的产品仍然自动落到该在的位置。 */
+
+  /* 产品列表长按拖动排序。
+     和照片那套一样：先缓存各行的位置，拖动时按坐标算落点 ——
+     用 elementFromPoint 在手指底下永远命中被拖的那个元素，算不出来。 */
+  function bindProdDrag(host) {
+    if (host.dataset.pDrag) return;
+    host.dataset.pDrag = '1';
+
+    var timer = null, from = null, list = null, rects = null, moved = false;
+
+    var clear = function () {
+      clearTimeout(timer); timer = null;
+      if (from) from.classList.remove('dragging');
+      from = null; list = null; rects = null; moved = false;
+    };
+
+    host.addEventListener('touchstart', function (ev) {
+      var card = ev.target.closest('.prod-card');
+      if (!card || ev.target.closest('button')) return;
+      timer = setTimeout(function () {
+        from = card;
+        list = card.parentNode;
+        rects = Array.prototype.map.call(list.children, function (n) {
+          return n.getBoundingClientRect();
+        });
+        card.classList.add('dragging');
+        if (navigator.vibrate) navigator.vibrate(12);
+      }, 380);
+    }, { passive: true });
+
+    host.addEventListener('touchmove', function (ev) {
+      if (!from) { clearTimeout(timer); return; }
+      ev.preventDefault();
+      moved = true;
+      var y = ev.touches[0].clientY;
+      var kids = Array.prototype.slice.call(list.children);
+      var at = kids.indexOf(from);
+      for (var i = 0; i < rects.length; i++) {
+        if (i === at) continue;
+        var r = rects[i];
+        if (y > r.top && y < r.bottom) {
+          if (i < at) list.insertBefore(from, kids[i]);
+          else list.insertBefore(from, kids[i].nextSibling);
+          rects = Array.prototype.map.call(list.children, function (n) {
+            return n.getBoundingClientRect();
+          });
+          break;
+        }
+      }
+    }, { passive: false });
+
+    host.addEventListener('touchend', function () {
+      if (!from || !moved) return clear();
+      var ids = Array.prototype.map.call(list.children, function (n) {
+        return n.dataset.pid;
+      });
+      clear();
+      var pos = {};
+      ids.forEach(function (id, i) { pos[id] = i; });
+      var next = allProducts().map(function (p) {
+        return pos[p.id] == null ? p : Object.assign({}, p, { ord: pos[p.id] });
+      });
+      saveProducts(next, '产品库：调整顺序')
+        .catch(function (e) { toast('排序没保存：' + (e.message || e), true); });
+    });
+
+    host.addEventListener('touchcancel', clear);
+  }
+
+
+  /* 同一件东西的不同款式/色号：敷尔佳的各种面膜、眉笔的各个色号。
+     它们是一件产品的多个选项，不该在产品库里各占一行。 */
+  function variantList(p) {
+    var v = p.variants;
+    if (!v) return [];
+    if (Array.isArray(v)) return v;
+    return String(v).split(/[、,，]/).map(function (x) { return x.trim(); })
+      .filter(Boolean);
+  }
+
   function sortProducts(rows) {
     return rows.slice().sort(function (a, b) {
+      var ao = a.ord, bo = b.ord;
+      if (ao != null && bo != null) return ao - bo;
+      if (ao != null) return -1;
+      if (bo != null) return 1;
       var d = orderIndex(a) - orderIndex(b);
       return d !== 0 ? d : (a.name < b.name ? -1 : 1);
     });
@@ -2487,6 +2573,7 @@
       '<div id="scanOut"></div>' + body +
       '<button class="more-toggle" id="addProdBtn" type="button">手动添加一件</button>';
 
+    bindProdDrag(host);
     $('#scanBtn', host).addEventListener('click', function () { $('#prodInput').click(); });
     $('#addProdBtn', host).addEventListener('click', function () {
       addProductManually(this);
@@ -2527,6 +2614,40 @@
      用户原话：「很多写的就是高光修容盘，这有啥用，我得知道品牌，以后才能对比」
      ——「彩棠修容盘」「covermark粉底霜」「YSL恒久」「雅诗兰黛DW」这种。
      `short` 是可编辑字段，没填就用品牌+品名拼一个兜底。 */
+
+  /* 产品改名后，把所有历史记录里的旧名字换掉。 */
+  function renameInEntries(oldName, newName) {
+    var touched = 0;
+    var swap = function (list) {
+      return (list || []).map(function (n) {
+        if (n !== oldName) return n;
+        touched++;
+        return newName;
+      });
+    };
+    // 本地先改，界面立刻对
+    ((state.data && state.data.entries) || []).forEach(function (e) {
+      if (!e.products) return;
+      e.products.skincare = swap(e.products.skincare);
+      e.products.makeup = swap(e.products.makeup);
+    });
+    if (!touched) return Promise.resolve(null);
+    refresh('products');
+
+    return GitStore.updateJSON('entries.json', function (remote) {
+      return (remote || []).map(function (e) {
+        if (!e.products) return e;
+        var y = Object.assign({}, e);
+        y.products = {
+          skincare: swap(e.products.skincare),
+          makeup: swap(e.products.makeup),
+        };
+        return y;
+      });
+    }, '把记录里的「' + oldName + '」改成「' + newName + '」')
+      .then(function () { toast('顺带改了 ' + touched + ' 处历史记录'); });
+  }
+
   function shortName(p) {
     if (p.short) return p.short;
     var brand = String(p.brand || '').split(/[\s/·]/)[0];
@@ -2547,7 +2668,7 @@
     var avg = avgScore(p);
     var rs = p.reviews || [];
 
-    return '<div class="prod-card">' +
+    return '<div class="prod-card" data-pid="' + esc(p.id) + '">' +
       '<div class="pc-main" data-detail-prod="' + esc(p.id) + '">' +
         '<div class="nm">' + esc(disp) + '</div>' +
         (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') +
@@ -2772,6 +2893,7 @@
     { k: 'category', label: '类别',   type: 'text' },
     { k: 'price',    label: '价格',   type: 'number', unit: '元' },
     { k: 'size',     label: '规格',   type: 'text',   ph: '如 50ml / 30g' },
+    { k: 'variants', label: '款式/色号', type: 'text', ph: '顿号分隔，如 积雪草、依克多因' },
     { k: 'spec',     label: '成分/参数', type: 'text', ph: '如 SPF50+ PA++++' },
     { k: 'start',    label: '购买/开始', type: 'date' },
     { k: 'end',      label: '停用',   type: 'date' },
@@ -2797,7 +2919,7 @@
     };
     /* 名称不算重复：上面标题一行放不下会截断（ESSENCE FOUNDATI…），
        详情里必须能看到完整的名字。品牌、类别、起用日期在标题里是完整的。 */
-    var HEADER_FIELDS = { short: 1, brand: 1, category: 1, start: 1 };
+    var HEADER_FIELDS = { short: 1, brand: 1, category: 1, start: 1, variants: 1 };
 
     // 默认只读，点 ✎ 才切成输入框 —— 一打开就满屏输入框太吵
     var readRows = PROD_FIELDS.filter(function (f) {
@@ -2860,6 +2982,11 @@
       : '';
 
     var box = el('<div class="prod-detail">' +
+      (variantList(p).length
+        ? '<div class="pd-vars">' + variantList(p).map(function (v) {
+            return '<span class="vchip">' + esc(v) + '</span>';
+          }).join('') + '</div>'
+        : '') +
       '<div class="pd-read' + (readRows ? '' : ' bare') + '">' + readRows +
         '<button class="pd-edit" type="button" aria-label="编辑">✎</button>' +
       '</div>' +
@@ -2936,7 +3063,17 @@
       var next = allProducts().map(function (x) {
         return x.id === id ? Object.assign({}, x, patch) : x;
       });
+      var after = next.filter(function (x) { return x.id === id; })[0];
+      var oldName = shortName(p), newName = shortName(after);
+
       saveProducts(next, '产品库：更新 ' + (patch.name || p.name))
+        .then(function () {
+          /* 记录里存的是产品名字符串。
+             改了名不同步，历史记录里还是旧名字，产品库对不上号 ——
+             既选不中，也看不出「这条用的就是这件」。 */
+          if (oldName === newName) return null;
+          return renameInEntries(oldName, newName);
+        })
         .then(function () { toast('已保存'); })
         .catch(function (e) { toast('失败：' + (e.message || e), true); });
     });
@@ -3426,8 +3563,12 @@
         if (zm.s > 1 || zm.moved) { zm.moved = false; return; }
         var r = ev.target.getBoundingClientRect();
         var f = (ev.clientX - r.left) / r.width;
-        if (f < 0.33) step(-1);
-        else if (f > 0.67) step(1);
+        /* 只有一张时两侧也退出。
+           否则点到边上会调翻页，而翻页在只有一张时直接 return —— 
+           什么都没发生，看起来就是「点了退不出去」。 */
+        if (lb.keys.length < 2) closeLb();
+        else if (f < 0.25) step(-1);
+        else if (f > 0.75) step(1);
         else closeLb();
         return;
       }
