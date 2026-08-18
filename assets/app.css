@@ -969,12 +969,6 @@ html, body { max-width: 100%; overflow-x: clip; }
 
 /* 素颜照的遮挡层 */
 /* 素颜遮挡：一条窄条就够，不要占掉半屏 */
-.bare-cover {
-  display: block; width: 100%; padding: 13px 16px;
-  border: none; background: var(--card-2); cursor: pointer;
-  font-family: var(--sans); font-size: 12.5px; color: var(--ink-soft);
-  text-align: left;
-}
 /* 「收起」和右侧的删除/编辑并排，统一成同一种气质 */
 .hide-btn {
   height: 30px; padding: 0 8px;
@@ -1207,7 +1201,7 @@ html, body { max-width: 100%; overflow-x: clip; }
 }
 
 /* 灯箱打开时锁住背景页面，并接管手势 */
-body.no-scroll { position: fixed; inset: 0; overflow: hidden; width: 100%; }
+body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 100%; }
 #lightbox { touch-action: none; }
 #lbImg { transform-origin: center center; will-change: transform; }
 
@@ -1247,3 +1241,12 @@ body.no-scroll { position: fixed; inset: 0; overflow: hidden; width: 100%; }
   flex: 0 0 38px; font-style: normal; font-size: 11.5px; color: var(--ink-faint);
 }
 .cd-row.new span { color: var(--focus); }
+
+/* 选择模式 */
+.glyphbtn.on { color: var(--accent); }
+.entry.selectable { cursor: pointer; }
+.entry.selectable .entry-head.top { background: var(--accent-bg); }
+.entry.picked { outline: 2px solid var(--accent); outline-offset: -1px; }
+.entry.picked .entry-head.top::after {
+  content: '✓'; margin-left: 6px; color: var(--accent); font-size: 14px;
+}

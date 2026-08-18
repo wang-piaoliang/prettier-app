@@ -349,7 +349,6 @@
   }
 
   var COVER_MAX = 2;   // 时间线上最多铺开几张，其余折叠
-  var barePeek = {};      // 本次会话里点开过的素颜记录，不持久化
   var photoExpand = {};   // 点过 +N 平铺的记录
 
   function entryHTML(e, showTime) {
@@ -364,15 +363,8 @@
     var shown = expanded ? keys : keys.slice(0, COVER_MAX);
     var hidden = keys.length - shown.length;
 
-    /* 素颜照默认收起 —— 时间线一拉全是素颜大图，
-       在外面翻的时候不合适，点一下再看。 */
-    var hideBare = e.face === 'bare' && !barePeek[e.id];
     var photos = !keys.length
       ? ''
-      : hideBare
-      ? '<button class="bare-cover" type="button" data-peek="' + esc(e.id) + '">' +
-          '<span class="bc-label">素颜 · ' + keys.length + ' 张</span>' +
-        '</button>'
       : '<div class="entry-photos n' + Math.min(shown.length, 4) +
         (expanded ? ' grid' : '') + '" data-id="' + esc(e.id) + '">' +
         shown.map(function (k, i) {
@@ -402,11 +394,16 @@
     }).join('');
 
     var prod = productsHTML(e);
-    var folded = !!entryFold[e.id];
+    /* 素颜默认收起：时间线一拉全是素颜大图，在外面翻不合适。
+       用的就是普通的折叠状态，不再做特例封面 —— 一种收起方式就够了。 */
+    var folded = entryFold[e.id] === undefined ? (e.face === 'bare') : entryFold[e.id];
 
     /* 时间在照片【上面】：一屏里先看到「这是几点、什么状态」，
        再往下看照片，顺序才对。写在照片底下要先看完图才知道是哪次。 */
-    return '<article class="entry' + (folded ? ' folded' : '') + '" data-id="' + esc(e.id) + '">' +
+    return '<article class="entry' + (folded ? ' folded' : '') +
+      (selectMode ? ' selectable' : '') +
+      (cmpSel.indexOf(e.id) >= 0 ? ' picked' : '') +
+      '" data-id="' + esc(e.id) + '">' +
       '<div class="entry-head top">' +
         (fmtTime(e.at)
           ? '<span class="entry-time"><span class="slot-name">' + esc(SLOT[slotOf(e)] || '') +
@@ -414,11 +411,6 @@
           : '') +
         '<div class="meta">' + pills.join('') + '</div>' +
         '<div class="entry-act">' +
-          ((barePeek[e.id] || photoExpand[e.id])
-            ? '<button class="hide-btn" type="button" data-hide="' + esc(e.id) + '">收起</button>'
-            : '') +
-          '<button class="cmp-pick' + (cmpSel.indexOf(e.id) >= 0 ? ' on' : '') + '" ' +
-            'data-cmp="' + esc(e.id) + '" aria-label="选中对比">比</button>' +
           '<button data-del="' + esc(e.id) + '" aria-label="删除">🗑</button>' +
           '<button data-edit="' + esc(e.id) + '" aria-label="编辑">✎</button>' +
         '</div>' +
@@ -664,9 +656,6 @@
       if (nt) return openDayNoteEditor(nt.dataset.note, nt);
 
 
-      var pk = ev.target.closest('[data-peek]');
-      if (pk) { barePeek[pk.dataset.peek] = true; redrawTimeline(); return; }
-
       var hd = ev.target.closest('[data-hide]');
       if (hd) return collapseEntry(hd.dataset.hide);
 
@@ -675,7 +664,7 @@
       var cp = ev.target.closest('[data-cmp]');
       if (cp) return toggleCompare(cp.dataset.cmp);
       if (ev.target.closest('#cmpGo')) return renderCompare();
-      if (ev.target.closest('#cmpClear')) { cmpSel = []; return go('timeline'); }
+      if (ev.target.closest('#cmpClear')) { cmpSel = []; selectMode = false; syncTopBtn(); return redrawTimeline(); }
 
       var po = ev.target.closest('[data-prod-open]');
       if (po) {
@@ -688,6 +677,8 @@
       var eh = ev.target.closest('.entry-head.top');
       if (eh && !ev.target.closest('.entry-act')) {
         var eid = eh.closest('.entry').dataset.id;
+        // 选择模式下点抬头是「选中来对比」，平时才是折叠
+        if (selectMode) return toggleCompare(eid);
         entryFold[eid] = !entryFold[eid];
         redrawTimeline();
         return;
@@ -698,7 +689,7 @@
       var card = ev.target.closest('.entry');
       if (card && !ev.target.closest('button') && !document.body.classList.contains('no-scroll')) {
         var cid = card.dataset.id;
-        if (barePeek[cid] || photoExpand[cid]) return collapseEntry(cid);
+        if (photoExpand[cid]) return collapseEntry(cid);
       }
 
       // 点 +N 直接在页面里平铺全部，不进灯箱
@@ -835,7 +826,6 @@
   }
 
   function collapseEntry(id) {
-    delete barePeek[id];
     delete photoExpand[id];
     refresh('timeline');
   }
@@ -2074,12 +2064,24 @@
     }
   }
 
+
+  function syncTopBtn() {
+    var b = $('#settingsBtn');
+    if (!b) return;
+    var pick = state.view === 'timeline';
+    b.textContent = pick ? (selectMode ? '✕' : '☑') : '◎';
+    b.setAttribute('aria-label', pick ? (selectMode ? '退出选择' : '选择对比') : '设置');
+    b.classList.toggle('on', pick && selectMode);
+  }
+
   function go(view) {
     state.view = view;
     $$('.view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + view); });
     $$('.tabbar button').forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
     window.scrollTo(0, 0);
     (RENDER[view] || function () {})();
+    if (view !== 'timeline') { selectMode = false; cmpSel = []; }
+    syncTopBtn();
     hydratePhotos(document);
   }
 
@@ -2276,6 +2278,7 @@
      控制变量法：改一两个产品，看妆效差别。
      所以对比要同时给出【照片并排】和【产品差在哪】。 */
   var cmpSel = [];
+  var selectMode = false;
 
   function toggleCompare(id) {
     var at = cmpSel.indexOf(id);
@@ -2289,7 +2292,8 @@
   }
 
   function cmpBar() {
-    if (!cmpSel.length) return '';
+    if (!selectMode) return '';
+    if (!cmpSel.length) return '<div class="cmp-bar"><span>点记录上方那一行，选两条来对比</span></div>';
     return '<div class="cmp-bar">' +
       '<span>已选 ' + cmpSel.length + '/2</span>' +
       (cmpSel.length === 2
@@ -3287,15 +3291,23 @@
     renderLightbox();
   }
 
+  /* body 加 position:fixed 会让页面滚动位置归零，
+     关掉灯箱就回不到刚才那张照片的位置了 —— 开之前记下来，关了再放回去。 */
+  var lbScrollY = 0;
+
   function openLb() {
+    lbScrollY = window.scrollY;
     $('#lightbox').hidden = false;
     document.body.classList.add('no-scroll');
+    document.body.style.top = -lbScrollY + 'px';
     resetZoom();
   }
 
   function closeLb() {
     $('#lightbox').hidden = true;
     document.body.classList.remove('no-scroll');
+    document.body.style.top = '';
+    window.scrollTo(0, lbScrollY);
     resetZoom();
   }
 
@@ -3572,7 +3584,15 @@
       if (b) go(b.dataset.view);
     });
 
-    on('#settingsBtn', 'click', function () { go('settings'); });
+    /* 右上角这颗按钮按页面变身份：
+       时间线上最常做的是「挑两条比一比」，设置一天也点不了一次。 */
+    on('#settingsBtn', 'click', function () {
+      if (state.view !== 'timeline') return go('settings');
+      selectMode = !selectMode;
+      if (!selectMode) cmpSel = [];
+      syncTopBtn();
+      redrawTimeline();
+    });
     on('#trendBtn', 'click', function () { go('trend'); });
 
     on('#foldAllBtn', 'click', function () {
