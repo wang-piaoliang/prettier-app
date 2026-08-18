@@ -403,10 +403,11 @@
     }).join('');
 
     var prod = productsHTML(e.products);
+    var folded = !!entryFold[e.id];
 
     /* 时间在照片【上面】：一屏里先看到「这是几点、什么状态」，
        再往下看照片，顺序才对。写在照片底下要先看完图才知道是哪次。 */
-    return '<article class="entry" data-id="' + esc(e.id) + '">' +
+    return '<article class="entry' + (folded ? ' folded' : '') + '" data-id="' + esc(e.id) + '">' +
       '<div class="entry-head top">' +
         (fmtTime(e.at)
           ? '<span class="entry-time"><span class="slot-name">' + esc(SLOT[slotOf(e)] || '') +
@@ -420,26 +421,30 @@
           '<button data-del="' + esc(e.id) + '" aria-label="删除">🗑</button>' +
           '<button data-edit="' + esc(e.id) + '" aria-label="编辑">✎</button>' +
         '</div>' +
-      '</div>' + photos +
-      bodyWrap(
-        (e.light ? '<div class="tiny" style="margin-bottom:10px">' + esc(e.light) + '</div>' : '') +
-        (tags ? '<div class="meta" style="margin-bottom:10px">' + tags + '</div>' : '') +
+        (folded && keys.length ? '<span class="fold-n">' + keys.length + ' 张</span>' : '') +
+        '<span class="ml-caret entry-caret">▾</span>' +
+      '</div>' +
+      (folded ? '' : photos) +
+      (folded ? '' : bodyWrap(
         scoresHTML(e.scores) +
-        /* 记的内容直接摊开。
-           藏在小箭头后面等于没记 —— 翻档案时要一眼看到写了什么，
-           而不是每条都点一下才知道有没有内容。 */
-        ((prod || zonesHTML(e.zones) || makeupHTML(e.makeup) || e.note)
+        /* 卡片上只放【你自己写的】和事实数据：备注、用了什么产品、分数。
+           AI 那些分区描述、光线说明、妆容点评一律不上卡片 ——
+           那是它的观察笔记，不是你的记录。数据还在，需要时另说。 */
+        ((prod || e.note)
           ? '<div class="entry-detail" id="dt-' + esc(e.id) + '">' +
-              prod + zonesHTML(e.zones) + makeupHTML(e.makeup) +
+              prod +
               (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
             '</div>'
           : '')
-      ) + '</article>';
+      )) + '</article>';
   }
 
   /* 没内容就整个不渲染。
      以前无条件套一层 .entry-body，素颜那种只有照片的记录
      底下会平白多出一块带内边距的白块，很难看。 */
+  /* 每条记录单独折叠。整天折叠用 collapsedDays，这个是「这一组照片」。 */
+  var entryFold = {};
+
   function bodyWrap(inner) {
     return inner && inner.trim()
       ? '<div class="entry-body">' + inner + '</div>'
@@ -608,6 +613,16 @@
 
       var hd = ev.target.closest('[data-hide]');
       if (hd) return collapseEntry(hd.dataset.hide);
+
+      /* 点抬头那一行收起/展开这一组照片。
+         .entry-act 里是删除和编辑，得先让开，否则点删除会变成折叠。 */
+      var eh = ev.target.closest('.entry-head.top');
+      if (eh && !ev.target.closest('.entry-act')) {
+        var eid = eh.closest('.entry').dataset.id;
+        entryFold[eid] = !entryFold[eid];
+        go('timeline');
+        return;
+      }
 
       /* 展开之后，点卡片里任何「不是按钮」的地方都收起。
          照片、编辑、删除、详情这些本来就有自己的行为，不能被抢。 */
@@ -1172,20 +1187,46 @@
   function pickerHTML(sel) {
     var list = allProducts().filter(function (p) { return p.status !== 'retired'; });
     if (!list.length) return '';
-    list = list.slice().sort(function (x, y) {
-      return (orderIndex(x) - orderIndex(y)) || String(x.name).localeCompare(String(y.name));
-    });
     var chosen = {};
     ['skincare', 'makeup'].forEach(function (k) {
       (sel[k] || []).forEach(function (n) { chosen[n] = 1; });
     });
-    return '<div class="pick-wrap"><div class="tiny" style="margin:10px 0 6px">' +
-      '点一下加进去，再点去掉</div><div class="pick" id="prodPick">' +
-      list.map(function (p) {
-        return '<button type="button" class="pchip' + (chosen[p.name] ? ' on' : '') + '" ' +
-          'data-pname="' + esc(p.name) + '" data-pkind="' + esc(kindOf(p)) + '">' +
-          esc(p.name) + '</button>';
-      }).join('') + '</div></div>';
+
+    // 按护肤 / 彩妆 / 仪器分组，组内按你定的使用顺序
+    var groups = [
+      { k: 'makeup', label: '彩妆' },
+      { k: 'skincare', label: '护肤' },
+      { k: 'device', label: '仪器' },
+    ];
+    var html = groups.map(function (g) {
+      var rows = list.filter(function (p) { return kindOf(p) === g.k; })
+        .sort(function (x, y) {
+          return (orderIndex(x) - orderIndex(y)) || String(x.name).localeCompare(String(y.name));
+        });
+      if (!rows.length) return '';
+      return '<div class="pick-group"><i>' + g.label + '</i><div class="pick">' +
+        rows.map(function (p) {
+          return '<button type="button" class="pchip' + (chosen[p.name] ? ' on' : '') + '" ' +
+            'data-pname="' + esc(p.name) + '" data-pkind="' + esc(kindOf(p)) + '">' +
+            esc(p.name) + '</button>';
+        }).join('') + '</div></div>';
+    }).join('');
+    return '<div class="pick-wrap" id="prodPick">' + html + '</div>';
+  }
+
+  function productField(d) {
+    return '<div class="field"><label>今天用的产品' +
+      (d.carriedFrom ? '（沿用 ' + fmtDate(d.carriedFrom) + '）' : '') + '</label>' +
+      '<div class="prod-edit">' +
+        '<div class="prow"><b>护肤</b>' +
+          '<input type="text" id="fSkincare" placeholder="顿号分隔" value="' +
+          esc((d.products.skincare || []).join('、')) + '"></div>' +
+        '<div class="prow"><b>彩妆</b>' +
+          '<input type="text" id="fMakeupProd" placeholder="顿号分隔" value="' +
+          esc((d.products.makeup || []).join('、')) + '"></div>' +
+      '</div>' +
+      pickerHTML(d.products) +
+    '</div>';
   }
 
   function bindPicker(host) {
@@ -1261,7 +1302,8 @@
     var d = state.draft;
 
     host.innerHTML =
-      '<div class="section-title">' + (d.editingId ? '编辑记录' : '记一条') + '</div>' +
+      // 标题只在改旧记录时才有意义：新记一条时下面 tab 已经高亮了，重复
+      (d.editingId ? '<div class="section-title">编辑记录</div>' : '') +
 
       /* 常用的三样放最上面：照片、时间、备注，填完就能存。
          其余大部分时候不填，收进下面的折叠区。 */
@@ -1297,6 +1339,11 @@
       '</button>' +
       '<div id="aiOut"></div>' +
 
+      /* 带妆的记录，「今天用了什么」就是核心信息 —— 放外面。
+         塞进折叠的「更多」里等于没有：用户明说「这个功能有了么，我没看到」。
+         素颜没有彩妆可记，留在折叠里就够。 */
+      (d.face === 'makeup' ? productField(d) : '') +
+
       /* ---- 以下折叠 ---- */
       '<button class="more-toggle" id="moreToggle" type="button" aria-expanded="false">' +
         '更多（光线、评分、产品、标签）<span class="ml-caret">▾</span>' +
@@ -1331,18 +1378,7 @@
             '</div>'
           : '') +
 
-        '<div class="field"><label>今天用的产品' +
-          (d.carriedFrom ? '（沿用 ' + fmtDate(d.carriedFrom) + '）' : '') + '</label>' +
-          '<div class="prod-edit">' +
-            '<div class="prow"><b>护肤</b>' +
-              '<input type="text" id="fSkincare" placeholder="顿号分隔" value="' +
-              esc((d.products.skincare || []).join('、')) + '"></div>' +
-            '<div class="prow"><b>彩妆</b>' +
-              '<input type="text" id="fMakeupProd" placeholder="顿号分隔" value="' +
-              esc((d.products.makeup || []).join('、')) + '"></div>' +
-          '</div>' +
-          pickerHTML(d.products) +
-        '</div>' +
+        (d.face === 'makeup' ? '' : productField(d)) +
 
         '<div class="field"><label>标签</label>' +
           '<input type="text" id="fTags" value="' + esc((d.tags || []).join(' ')) + '">' +
@@ -1441,7 +1477,7 @@
         b.classList.add('on');
       });
     };
-    seg('#fFace', 'face', true);
+    seg('#fFace', 'face', true);   // true = 改完重画，产品栏要跟着换位置
 
     $('#lightPresets', host).addEventListener('click', function (ev) {
       var b = ev.target.closest('button');
@@ -2160,8 +2196,15 @@
   var prodFold = {};      // kind -> true 表示收起
 
   function kindOf(p) {
-    if (p.kind === 'device' || p.kind === 'makeup') return p.kind;
     var hay = (p.category || '') + ' ' + (p.name || '');
+
+    /* ⚠️ 这两条要排在 p.kind 之前。
+       p.kind 是 AI 认的、不是用户填的，认错了就一直错下去 ——
+       「唇膜」被认成彩妆就是这么来的。品类词明确时以品类词为准。 */
+    if (/粉扑|美妆蛋|粉底刷|散粉刷|刷具|睫毛夹/.test(hay)) return 'makeup';
+    if (/唇膜|润唇/.test(hay)) return 'skincare';
+
+    if (p.kind === 'device' || p.kind === 'makeup') return p.kind;
 
     /* 顺序很重要：先认明确的护肤/彩妆品类，最后才轮到「仪」这种模糊词。
        反过来的话「面膜仪」「导入仪面膜」里的「仪」会把面膜误判成仪器。 */
@@ -2191,9 +2234,12 @@
     device: [],
   };
 
+  /* 顺序以代码为准。
+     曾经存进 settings.json，想着「顺序属于个人偏好该放数据里」——
+     但顺序只会通过对话调整、改的还是代码，于是数据里那份很快过期，
+     而它优先级更高，结果代码改了不生效。一份来源就够了。 */
   function orderList(kind) {
-    var conf = (state.data && state.data.productOrder) || {};
-    return conf[kind] || DEFAULT_ORDER[kind] || [];
+    return DEFAULT_ORDER[kind] || [];
   }
 
   function orderIndex(p) {
@@ -2542,13 +2588,27 @@
     var p = allProducts().filter(function (x) { return x.id === id; })[0];
     if (!p) return;
 
+    /* 只读区只显示【别处没有的】信息。
+       名称、品牌、类别、起用日期上面标题那行已经写了；
+       价格和规格属于购买记录，那边列得更清楚（还能区分每次回购）。
+       同一件事写三遍，翻起来全是噪音。
+       编辑态仍然给全字段 —— 认错了要能改。 */
+    var buysAll = p.purchases || [];
+    var inBuys = function (k) {
+      return buysAll.some(function (b) { return String(b[k] || '') === String(p[k] || ''); });
+    };
+    var HEADER_FIELDS = { name: 1, brand: 1, category: 1, start: 1 };
+
     // 默认只读，点 ✎ 才切成输入框 —— 一打开就满屏输入框太吵
     var readRows = PROD_FIELDS.filter(function (f) {
-      return p[f.k] != null && p[f.k] !== '';
+      if (p[f.k] == null || p[f.k] === '') return false;
+      if (HEADER_FIELDS[f.k]) return false;
+      if ((f.k === 'price' || f.k === 'size') && buysAll.length && inBuys(f.k)) return false;
+      return true;
     }).map(function (f) {
       return '<div class="pd-row read"><span>' + esc(f.label) + '</span>' +
         '<b>' + esc(String(p[f.k])) + (f.unit || '') + '</b></div>';
-    }).join('') || '<div class="pd-row read"><span>还没填信息</span></div>';
+    }).join('');
 
     var editRows = PROD_FIELDS.map(function (f) {
       return '<label class="pd-row"><span>' + esc(f.label) + '</span>' +
@@ -2595,7 +2655,7 @@
       : '';
 
     var box = el('<div class="prod-detail">' +
-      '<div class="pd-read">' + readRows +
+      '<div class="pd-read' + (readRows ? '' : ' bare') + '">' + readRows +
         '<button class="pd-edit" type="button" aria-label="编辑">✎</button>' +
       '</div>' +
       '<div class="pd-edit-form" hidden>' + editRows +
@@ -2613,13 +2673,16 @@
       ((p.photos || []).length
         ? '<div class="pd-hist"><b>识别用的照片</b>' +
           '<div class="pc-shots">' +
-          p.photos.map(function (path) {
-            return '<img data-key="' + esc(path) + '" alt="">';
+          p.photos.map(function (path, i) {
+            return '<button class="pc-shot" type="button" data-shot="' + i + '">' +
+              '<img data-key="' + esc(path) + '" alt=""></button>';
           }).join('') + '</div></div>'
         : '') +
       '</div>');
 
     card.appendChild(box);
+    // 产品照片和时间线的照片走同一套懒加载，不调这一下就一直是白的
+    hydratePhotos(box);
     box.addEventListener('click', function (ev) {
       var ed = ev.target.closest('[data-rv-edit]');
       if (ed) return editReview(id, Number(ed.dataset.rvEdit), ed.closest('.prod-review'));
@@ -2629,6 +2692,8 @@
       if (ba) return openBuyEditor(id, ba);
       var bd = ev.target.closest('[data-buy-del]');
       if (bd) return deleteBuy(id, Number(bd.dataset.buyDel));
+      var sp = ev.target.closest('[data-shot]');
+      if (sp) return openPhotoList(p.photos, Number(sp.dataset.shot));
       var sh = ev.target.closest('[data-shoot]');
       if (sh) {
         var inp = $('#prodShotInput');
@@ -2887,14 +2952,20 @@
       var shotPaths = shots.map(function (f) { return f.path; });
 
       var added = fresh.map(function (x, i) {
+        /* ⚠️ 新产品同样要落购买记录。
+           以前只有「已在库」那条分支加，新入库的不加 ——
+           于是价格规格写进了字段，购买记录却一直是空的。 */
+        var buy = buyFrom(x);
         return {
           id: 'p' + Date.now().toString(36) + i,
           name: x.name, brand: x.brand || '', kind: x.kind || 'skincare',
           category: x.category || '', size: x.size || undefined,
           price: x.price, spec: x.spec || undefined, note: x.note || undefined,
           status: 'using',
+          purchases: buy ? [buy] : undefined,
           photos: shotPaths,            // 识别用的原图，留着以后重认
-          start: now, addedAt: now,     // 没有购买日期就用入库这天
+          start: (buy && buy.date) || now,
+          addedAt: now,
         };
       });
       needShots.forEach(function (idx) {
@@ -2929,6 +3000,16 @@
     lb.keys = keys;
     lb.i = Math.max(0, Math.min(startIdx || 0, keys.length - 1));
 
+    $('#lightbox').hidden = false;
+    renderLightbox();
+  }
+
+  /* 直接给一组路径开灯箱。
+     openLightbox 是按记录 id 找照片的，产品照片不属于任何记录，走不通。 */
+  function openPhotoList(paths, startIdx) {
+    if (!paths || !paths.length) return;
+    lb.keys = paths.slice();
+    lb.i = Math.max(0, Math.min(startIdx || 0, paths.length - 1));
     $('#lightbox').hidden = false;
     renderLightbox();
   }
@@ -2973,8 +3054,10 @@
       }
       if (ev.target.closest('#lbPrev')) { step(-1); return; }
       if (ev.target.closest('#lbNext')) { step(1); return; }
-      // 点图片本身不关闭，点背景才关
-      if (ev.target.id === 'lightbox' || ev.target.closest('#lbClose')) box.hidden = true;
+      /* 点图片本身也退出 —— 大部分看图应用都是这样，
+         点背景才关会让人以为卡住了。左右翻页有专门的按钮和横滑。 */
+      if (ev.target.id === 'lightbox' || ev.target.id === 'lbImg' ||
+          ev.target.closest('#lbClose')) box.hidden = true;
     });
 
     document.addEventListener('keydown', function (ev) {

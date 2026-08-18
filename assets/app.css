@@ -874,7 +874,7 @@ textarea { min-height: 64px; }
   display: flex; align-items: center; gap: 8px; padding: 3px 0;
 }
 .pd-row span {
-  flex: 0 0 66px; font-family: var(--sans); font-size: 13px; color: var(--ink-faint);
+  flex: 0 0 66px; font-family: var(--sans); font-size: 11.5px; color: var(--ink-faint);
 }
 /* ⚠️ 字号必须 ≥16px，iOS 会对更小的输入框自动放大整页。
    要让它显得轻，只能压内边距和高度，不能压字号。 */
@@ -922,12 +922,14 @@ body.no-scroll { overflow: hidden; touch-action: none; }
 
 /* 产品详情：只读态 */
 .pd-read { position: relative; padding-right: 30px; }
-.pd-row.read { padding: 4px 0; }
-/* 和输入框同字号。
-   输入框卡死在 16px（iOS 对更小的会聚焦时放大整页），
-   所以只能把旁边的读数抬到 16px 来对齐，不能反过来压它。 */
+.pd-row.read { padding: 2px 0; line-height: 1.5; }
+/* ⚠️ 只读文字保持小字号，不要跟着输入框走。
+   16px 那条限制【只针对能聚焦的 input】—— iOS 是对小于 16px 的
+   输入框在聚焦时放大整页，只读的展示文字没有这个问题。
+   曾经为了「和输入框对齐」把这里提到 16px，结果整个产品详情
+   都变得又大又散 —— 这是用户反复指出过的问题，别再犯。 */
 .pd-row.read b {
-  font-family: var(--sans); font-size: 16px; font-weight: 400; color: var(--ink-soft);
+  font-family: var(--sans); font-size: 13px; font-weight: 400; color: var(--ink-soft);
 }
 .pd-edit {
   position: absolute; top: 0; right: 0;
@@ -1030,7 +1032,7 @@ html, body { max-width: 100%; overflow-x: clip; }
 /* 产品照片：小图挂在下面，不抢视线 */
 /* 识别用的原图放在详情最后，平时不占版面 */
 .pc-shots { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.pc-shots img {
+.pc-shots img, .pc-shot {
   width: 52px; height: 52px; border-radius: 8px;
   object-fit: cover; background: var(--card-2);
 }
@@ -1104,20 +1106,32 @@ html, body { max-width: 100%; overflow-x: clip; }
   padding: 0; border: none; background: none;
   text-align: left; cursor: pointer; color: inherit;
 }
+/* 小一点、淡一点：它是个顺手的入口，不是这一行的主角 */
 .dh-add {
-  flex: none; width: 30px; height: 30px; margin-left: 8px;
-  border: 1px solid var(--line); border-radius: 999px;
-  background: var(--card); color: var(--accent-ink);
-  font-size: 16px; line-height: 1; cursor: pointer;
+  flex: none; width: 22px; height: 22px; margin-left: 10px; padding: 0;
+  border: none; background: none;
+  color: var(--ink-faint); font-size: 13px; line-height: 1; cursor: pointer;
 }
+.dh-add:active { color: var(--accent-ink); }
 
 /* 产品库点选 */
-.pick { display: flex; flex-wrap: wrap; gap: 6px; }
+/* 产品点选：小圆标签，按护肤/彩妆分组。
+   ⚠️ 这些是 button 不是 input，字号不受 iOS 那条 16px 限制，
+   小字号在这里是安全的。 */
+.pick-wrap { margin-top: 10px; }
+.pick-group { margin-top: 8px; }
+.pick-group > i {
+  display: block; margin-bottom: 5px;
+  font-style: normal; font-family: var(--sans); font-size: 11px;
+  letter-spacing: 1px; color: var(--accent-ink);
+}
+.pick { display: flex; flex-wrap: wrap; gap: 5px; }
 .pchip {
   border: 1px solid var(--line); background: var(--card);
   color: var(--ink-soft); border-radius: 999px;
-  padding: 6px 12px; font-family: var(--sans); font-size: 14px;
+  padding: 4px 10px; font-family: var(--sans); font-size: 12px; line-height: 1.5;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
 }
 .pchip.on {
   border-color: var(--accent); background: var(--accent);
@@ -1126,3 +1140,24 @@ html, body { max-width: 100%; overflow-x: clip; }
 
 .pd-shoot { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
 .pd-shoot-msg { flex: 1 0 100%; }
+
+/* 识别用的照片：能点开看大图 */
+.pc-shot {
+  padding: 0; border: none; background: none; line-height: 0;
+  border-radius: 8px; overflow: hidden; cursor: pointer;
+}
+.pc-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* 每组照片单独折叠：点抬头那一行 */
+.entry-head.top { cursor: pointer; }
+.entry-caret {
+  flex: none; margin-left: 6px; color: var(--ink-faint); font-size: 12px;
+  transition: transform .18s ease;
+}
+.entry.folded .entry-caret { transform: rotate(-90deg); }
+.entry.folded .entry-head.top { padding-bottom: 13px; }
+.fold-n { font-family: var(--sans); font-size: 12px; color: var(--ink-faint); }
+#lbImg { cursor: zoom-out; }
+
+/* 只读区没内容时不要撑高，留出那支笔就够 */
+.pd-read.bare { min-height: 26px; }
