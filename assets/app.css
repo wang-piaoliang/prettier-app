@@ -1085,9 +1085,30 @@ html, body { max-width: 100%; overflow-x: clip; }
 
 
 /* 时间行提到照片上面后，自己就是这条记录的抬头 */
+/* 时间行现在是整张卡的抬头，不再是照片和正文之间的分隔线。
+   ⚠️ border-bottom 必须显式清掉 —— 只改 padding 的话，
+   原来那条虚线会留在这儿，横在时间和照片中间很脏。 */
 .entry-head.top {
-  margin-bottom: 10px;
-  padding: 0 2px;
+  padding: 13px 16px 11px;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+.entry-body { padding: 14px 18px 16px; }
+/* 正文里只有备注时，上面那条虚线是多余的 —— 卡里本来就只有它 */
+.entry-detail > .note:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+
+/* 日期条：左边整块点折叠，右边一个「＋」在这天记一条 */
+.dh-main {
+  display: flex; align-items: center; gap: 10px;
+  flex: 1; min-width: 0;
+  padding: 0; border: none; background: none;
+  text-align: left; cursor: pointer; color: inherit;
+}
+.dh-add {
+  flex: none; width: 30px; height: 30px; margin-left: 8px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--card); color: var(--accent-ink);
+  font-size: 16px; line-height: 1; cursor: pointer;
 }
 
 /* 产品库点选 */

@@ -421,7 +421,7 @@
           '<button data-edit="' + esc(e.id) + '" aria-label="编辑">✎</button>' +
         '</div>' +
       '</div>' + photos +
-      '<div class="entry-body">' +
+      bodyWrap(
         (e.light ? '<div class="tiny" style="margin-bottom:10px">' + esc(e.light) + '</div>' : '') +
         (tags ? '<div class="meta" style="margin-bottom:10px">' + tags + '</div>' : '') +
         scoresHTML(e.scores) +
@@ -433,8 +433,17 @@
               prod + zonesHTML(e.zones) + makeupHTML(e.makeup) +
               (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
             '</div>'
-          : '') +
-      '</div></article>';
+          : '')
+      ) + '</article>';
+  }
+
+  /* 没内容就整个不渲染。
+     以前无条件套一层 .entry-body，素颜那种只有照片的记录
+     底下会平白多出一块带内边距的白块，很难看。 */
+  function bodyWrap(inner) {
+    return inner && inner.trim()
+      ? '<div class="entry-body">' + inner + '</div>'
+      : '';
   }
 
   function productsHTML(p) {
@@ -542,12 +551,18 @@
         var n = d.rows.length;
         var photos = d.rows.reduce(function (a, e) { return a + (e.photos || []).length; }, 0);
         return '<section class="day' + (closed ? ' closed' : '') + '" data-date="' + esc(d.date) + '">' +
-          '<button class="day-head" type="button" data-fold="' + esc(d.date) + '">' +
-            '<span class="day-date">' + fmtDate(d.date) + '</span>' +
-            '<span class="day-week">' + esc(weekday(d.date)) + '</span>' +
-            '<span class="day-count">' + (n > 1 ? n + ' 次 · ' : '') + photos + ' 张</span>' +
-            '<span class="ml-caret">▾</span>' +
-          '</button>' +
+          /* 折叠和「在这天记一条」是两个动作，得是两个按钮。
+             按钮里不能再套按钮，所以外面用 div 兜住。 */
+          '<div class="day-head">' +
+            '<button class="dh-main" type="button" data-fold="' + esc(d.date) + '">' +
+              '<span class="day-date">' + fmtDate(d.date) + '</span>' +
+              '<span class="day-week">' + esc(weekday(d.date)) + '</span>' +
+              '<span class="day-count">' + (n > 1 ? n + ' 次 · ' : '') + photos + ' 张</span>' +
+              '<span class="ml-caret">▾</span>' +
+            '</button>' +
+            '<button class="dh-add" type="button" data-add-day="' + esc(d.date) + '" ' +
+              'aria-label="在这天记一条">＋</button>' +
+          '</div>' +
           '<div class="day-body"' + (closed ? ' hidden' : '') + '>' +
             (notes[d.date]
               ? '<div class="day-note" data-note="' + esc(d.date) + '">' +
@@ -570,6 +585,8 @@
 
   function bindTimeline(host) {
     host.addEventListener('click', function (ev) {
+      var ad = ev.target.closest('[data-add-day]');
+      if (ad) return startEntryOn(ad.dataset.addDay);
       var f = ev.target.closest('[data-fold]');
       if (f) {
         var date = f.dataset.fold;
@@ -1188,6 +1205,20 @@
       var box = $(kind === 'makeup' ? '#fMakeupProd' : '#fSkincare', host);
       if (box) box.value = arr.join('、');
     });
+  }
+
+
+  /* 从时间线某一天直接开记。
+     补记昨天/前天的时候，不用先进「记一条」再回头改日期。 */
+  function startEntryOn(date) {
+    var d = state.draft;
+    if (d && (d.photos || []).length &&
+        !confirm('现在这条草稿里已经有照片了，换成 ' + fmtDate(date) + ' 重新记？')) return;
+    state.draft = blankDraft();
+    state.draft.date = date;
+    // 日期换成那一天，时间保留当下的钟点 —— 补记时自己再改
+    state.draft.at = date + 'T' + nowLocal().slice(11);
+    go('compose');
   }
 
   function blankDraft() {
