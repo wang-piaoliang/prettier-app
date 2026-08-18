@@ -874,14 +874,14 @@ textarea { min-height: 64px; }
   display: flex; align-items: center; gap: 8px; padding: 3px 0;
 }
 .pd-row span {
-  flex: 0 0 66px; font-family: var(--sans); font-size: 11.5px; color: var(--ink-faint);
+  flex: 0 0 66px; font-family: var(--sans); font-size: 13px; color: var(--ink-faint);
 }
 /* ⚠️ 字号必须 ≥16px，iOS 会对更小的输入框自动放大整页。
    要让它显得轻，只能压内边距和高度，不能压字号。 */
 .pd-row input {
-  flex: 1; min-width: 0; padding: 5px 9px; border-radius: 8px;
+  flex: 1; min-width: 0; padding: 4px 9px; border-radius: 8px;
   border: 1px solid var(--line); background: var(--card);
-  font-family: var(--sans); font-size: 16px; line-height: 1.3;
+  font-family: var(--sans); font-size: 16px; line-height: 1.25;
 }
 .pd-row i { font-style: normal; font-family: var(--sans); font-size: 12px; color: var(--ink-faint); }
 .pd-hist { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
@@ -923,8 +923,11 @@ body.no-scroll { overflow: hidden; touch-action: none; }
 /* 产品详情：只读态 */
 .pd-read { position: relative; padding-right: 30px; }
 .pd-row.read { padding: 4px 0; }
+/* 和输入框同字号。
+   输入框卡死在 16px（iOS 对更小的会聚焦时放大整页），
+   所以只能把旁边的读数抬到 16px 来对齐，不能反过来压它。 */
 .pd-row.read b {
-  font-family: var(--sans); font-size: 13px; font-weight: 400; color: var(--ink-soft);
+  font-family: var(--sans); font-size: 16px; font-weight: 400; color: var(--ink-soft);
 }
 .pd-edit {
   position: absolute; top: 0; right: 0;
@@ -996,6 +999,12 @@ html, body { max-width: 100%; overflow-x: clip; }
   /* 做成一条明确的带：整块底色 + 左侧色条，滚动时始终知道在看哪一天。
      背景必须不透明 —— 半透明的话下面的照片会透上来，字就糊了。 */
   align-items: center;
+  /* ⚠️ 宽度要把负边距补回来。
+     它是个 <button>：width:auto 会收缩到内容宽，整条变短；
+     而 width:100% 配上左右各 -18px 的负边距，等于整条往左平移 18px，
+     右边空出一截没上色 —— 就是「颜色少了一节」。
+     只有 100% + 36px 才真的两头顶到屏幕边。 */
+  width: calc(100% + 36px);
   margin: 0 -18px 14px;                 /* 顶到屏幕两边 */
   padding: 11px 18px 11px 16px;
   border: none;
@@ -1073,3 +1082,26 @@ html, body { max-width: 100%; overflow-x: clip; }
   font-size: 15px;
 }
 #pending button:disabled { opacity: .6; }
+
+
+/* 时间行提到照片上面后，自己就是这条记录的抬头 */
+.entry-head.top {
+  margin-bottom: 10px;
+  padding: 0 2px;
+}
+
+/* 产品库点选 */
+.pick { display: flex; flex-wrap: wrap; gap: 6px; }
+.pchip {
+  border: 1px solid var(--line); background: var(--card);
+  color: var(--ink-soft); border-radius: 999px;
+  padding: 6px 12px; font-family: var(--sans); font-size: 14px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pchip.on {
+  border-color: var(--accent); background: var(--accent);
+  color: #fff;
+}
+
+.pd-shoot { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.pd-shoot-msg { flex: 1 0 100%; }

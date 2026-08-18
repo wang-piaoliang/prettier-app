@@ -274,12 +274,15 @@
       '2. 一张照片里有多件就都列出来；同一件的多张照片（正面/背面/价签）合并成一条。',
       '3. kind 只能是 "skincare"（护肤）、"makeup"（彩妆）、"device"（仪器）。',
       '4. size 写包装上印的净含量，带单位，例如 "50ml"、"30g"、"1.7oz"。',
-      '5. price 只写数字（人民币元），看到价签或吊牌才填，没有就省略。',
+      '5. price 只写数字（人民币元），看到价签、吊牌或订单截图才填，没有就省略。',
+      '6. 是订单/小票截图的话，把下单日期写进 boughtAt（YYYY-MM-DD），',
+      '   店铺或平台写进 where（如 天猫、丝芙兰、免税店）。看不到就省略。',
       '',
       '严格输出 JSON，不要 markdown 代码块：',
       '{"products":[{',
       '  "brand":"", "name":"", "kind":"skincare", "category":"",',
-      '  "size":"", "price":0, "spec":"", "note":""',
+      '  "size":"", "price":0, "spec":"", "note":"",',
+      '  "boughtAt":"", "where":""',
       '}]}',
       '',
       'category 用中文：洁面、化妆水、精华、眼霜、面霜、防晒、面膜、',
@@ -307,6 +310,12 @@
             price: (isFinite(n) && n > 0) ? n : undefined,
             spec: String(p.spec || '').trim(),
             note: String(p.note || '').trim(),
+            /* ⚠️ 这份白名单是「识别结果能不能落库」的最后一道闸。
+               漏写一个字段，模型认出来了也会在这儿被静默丢掉 ——
+               购买记录一直是空的就是因为 boughtAt / where 没列进来。 */
+            boughtAt: /^\d{4}-\d{2}-\d{2}$/.test(String(p.boughtAt || '').trim())
+              ? String(p.boughtAt).trim() : '',
+            where: String(p.where || '').trim(),
           };
         });
         return out;

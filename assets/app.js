@@ -404,9 +404,10 @@
 
     var prod = productsHTML(e.products);
 
-    return '<article class="entry" data-id="' + esc(e.id) + '">' + photos +
-      '<div class="entry-body">' +
-        '<div class="entry-head">' +
+    /* 时间在照片【上面】：一屏里先看到「这是几点、什么状态」，
+       再往下看照片，顺序才对。写在照片底下要先看完图才知道是哪次。 */
+    return '<article class="entry" data-id="' + esc(e.id) + '">' +
+      '<div class="entry-head top">' +
         (fmtTime(e.at)
           ? '<span class="entry-time"><span class="slot-name">' + esc(SLOT[slotOf(e)] || '') +
             '</span>' + fmtTime(e.at) + '</span>'
@@ -419,16 +420,16 @@
           '<button data-del="' + esc(e.id) + '" aria-label="删除">🗑</button>' +
           '<button data-edit="' + esc(e.id) + '" aria-label="编辑">✎</button>' +
         '</div>' +
-        '</div>' +
+      '</div>' + photos +
+      '<div class="entry-body">' +
         (e.light ? '<div class="tiny" style="margin-bottom:10px">' + esc(e.light) + '</div>' : '') +
         (tags ? '<div class="meta" style="margin-bottom:10px">' + tags + '</div>' : '') +
         scoresHTML(e.scores) +
-        /* 分区观察、产品、妆容默认收起 —— 时间线要先能一眼扫过，
-           想看细节再展开 */
+        /* 记的内容直接摊开。
+           藏在小箭头后面等于没记 —— 翻档案时要一眼看到写了什么，
+           而不是每条都点一下才知道有没有内容。 */
         ((prod || zonesHTML(e.zones) || makeupHTML(e.makeup) || e.note)
-          ? '<button class="detail-toggle" type="button" data-detail="' + esc(e.id) + '"' +
-              ' aria-label="展开详情"><span class="ml-caret">▾</span></button>' +
-            '<div class="entry-detail" id="dt-' + esc(e.id) + '" hidden>' +
+          ? '<div class="entry-detail" id="dt-' + esc(e.id) + '">' +
               prod + zonesHTML(e.zones) + makeupHTML(e.makeup) +
               (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
             '</div>'
@@ -1133,14 +1134,69 @@
     return all[0] || null;
   }
 
+  /* 找最近一条【记了某类产品】的记录。
+     彩妆必须只跟带妆的记录走 —— 直接沿用上一条的话，
+     上一条要是素颜，彩妆就成空的了，等于每天都要重填。 */
+  function lastProducts(kind, faceNeeded) {
+    var all = newestFirst((state.data && state.data.entries) || []);
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i];
+      if (faceNeeded && e.face !== faceNeeded) continue;
+      var list = e.products && e.products[kind];
+      if (list && list.length) return { list: list.slice(), date: e.date };
+    }
+    return null;
+  }
+
+
+  /* 产品库点选：手打产品名又慢又容易和库里对不上号。
+     库里按顺序列出来，点一下就加/去掉，输入框跟着同步 ——
+     输入框留着是为了记库里还没有的东西。 */
+  function pickerHTML(sel) {
+    var list = allProducts().filter(function (p) { return p.status !== 'retired'; });
+    if (!list.length) return '';
+    list = list.slice().sort(function (x, y) {
+      return (orderIndex(x) - orderIndex(y)) || String(x.name).localeCompare(String(y.name));
+    });
+    var chosen = {};
+    ['skincare', 'makeup'].forEach(function (k) {
+      (sel[k] || []).forEach(function (n) { chosen[n] = 1; });
+    });
+    return '<div class="pick-wrap"><div class="tiny" style="margin:10px 0 6px">' +
+      '点一下加进去，再点去掉</div><div class="pick" id="prodPick">' +
+      list.map(function (p) {
+        return '<button type="button" class="pchip' + (chosen[p.name] ? ' on' : '') + '" ' +
+          'data-pname="' + esc(p.name) + '" data-pkind="' + esc(kindOf(p)) + '">' +
+          esc(p.name) + '</button>';
+      }).join('') + '</div></div>';
+  }
+
+  function bindPicker(host) {
+    var pick = $('#prodPick', host);
+    if (!pick) return;
+    pick.addEventListener('click', function (ev) {
+      var b = ev.target.closest('.pchip');
+      if (!b) return;
+      var name = b.dataset.pname;
+      var kind = b.dataset.pkind === 'makeup' ? 'makeup' : 'skincare';
+      var d = state.draft;
+      var arr = (d.products[kind] || []).slice();
+      var at = arr.indexOf(name);
+      if (at >= 0) arr.splice(at, 1); else arr.push(name);
+      d.products[kind] = arr;
+      b.classList.toggle('on', at < 0);
+      var box = $(kind === 'makeup' ? '#fMakeupProd' : '#fSkincare', host);
+      if (box) box.value = arr.join('、');
+    });
+  }
+
   function blankDraft() {
     var now = new Date();
-    // 护肤品从照片上看不出来，而且基本天天一样 —— 默认沿用上一条，自己改
-    var prev = lastEntry();
-    var carried = prev && prev.products
-      ? { skincare: (prev.products.skincare || []).slice(),
-          makeup: (prev.products.makeup || []).slice() }
-      : { skincare: [], makeup: [] };
+    // 产品从照片上看不出来，而且基本天天一样 —— 默认沿用上一次，自己改
+    var sk = lastProducts('skincare', null);
+    var mk = lastProducts('makeup', 'makeup');
+    var carried = { skincare: sk ? sk.list : [], makeup: mk ? mk.list : [] };
+    var prev = mk || sk;
 
     return {
       photos: [],
@@ -1254,6 +1310,7 @@
               '<input type="text" id="fMakeupProd" placeholder="顿号分隔" value="' +
               esc((d.products.makeup || []).join('、')) + '"></div>' +
           '</div>' +
+          pickerHTML(d.products) +
         '</div>' +
 
         '<div class="field"><label>标签</label>' +
@@ -1337,6 +1394,7 @@
       d.tags = this.value.split(/[\s,，、]+/).filter(Boolean);
     });
     var splitList = function (v) { return v.split(/[,，、]+/).map(function (x) { return x.trim(); }).filter(Boolean); };
+    bindPicker(host);
     $('#fSkincare', host).addEventListener('input', function () { d.products.skincare = splitList(this.value); });
     $('#fMakeupProd', host).addEventListener('input', function () { d.products.makeup = splitList(this.value); });
 
@@ -2514,6 +2572,12 @@
           '<button class="ie-cancel" type="button">取消</button>' +
           '<button class="ie-ok" type="button">保存</button>' +
         '</div>' +
+      '</div>' +
+      '<div class="pd-shoot">' +
+        '<button class="more-toggle" type="button" data-shoot="' + esc(p.id) + '">' +
+          '＋ 拍张照补充信息' +
+        '</button>' +
+        '<span class="tiny pd-shoot-msg"></span>' +
       '</div>' + buyHTML + hist +
       ((p.photos || []).length
         ? '<div class="pd-hist"><b>识别用的照片</b>' +
@@ -2534,6 +2598,15 @@
       if (ba) return openBuyEditor(id, ba);
       var bd = ev.target.closest('[data-buy-del]');
       if (bd) return deleteBuy(id, Number(bd.dataset.buyDel));
+      var sh = ev.target.closest('[data-shoot]');
+      if (sh) {
+        var inp = $('#prodShotInput');
+        inp.onchange = function () {
+          shootProduct(id, this.files, box.querySelector('.pd-shoot-msg'));
+          this.value = '';
+        };
+        inp.click();
+      }
     });
 
     box.querySelector('.pd-edit').addEventListener('click', function () {
@@ -2625,6 +2698,75 @@
       .catch(function (e) { toast('失败：' + e.message, true); });
   }
 
+
+  /* 识别结果里凡是带了价格/规格/日期的，都当成一次购买记录下来。
+     用户反馈：「上传的照片多了时间、价格、容量等信息，你没补进去」——
+     以前只往产品字段里塞，字段非空就被跳过，等于白认。 */
+  function buyFrom(x) {
+    var price = x.price != null && x.price !== '' ? Number(x.price) : null;
+    var size = x.size || '';
+    var date = /^\d{4}-\d{2}-\d{2}$/.test(x.boughtAt || '') ? x.boughtAt : todayISO();
+    if (price == null && !size && !x.where) return null;
+    var b = { date: date };
+    if (price != null && !isNaN(price)) b.price = price;
+    if (size) b.size = size;
+    if (x.where) b.where = x.where;
+    return b;
+  }
+
+  // 同一张图可能被传两次，别记成两笔
+  function hasSameBuy(list, b) {
+    return (list || []).some(function (o) {
+      return o.date === b.date && o.price === b.price && (o.size || '') === (b.size || '');
+    });
+  }
+
+  /* 单个产品补拍：直接指定是哪一件，不走去重猜名字。
+     用户要的是「这件东西我又看到了新信息，补进去」，
+     而不是「认认看这是什么」—— 后者才需要匹配。 */
+  function shootProduct(pid, files, statusEl) {
+    if (!files || !files.length) return;
+    if (!ensureKey()) return;
+    statusEl.textContent = '识别中…';
+
+    Promise.all(Array.prototype.slice.call(files).map(function (f) {
+      return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+    })).then(function (blobs) {
+      return PrettierAI.identifyProducts(blobs).then(function (found) {
+        var x = (found.products || [])[0];
+        if (!x) throw new Error('这张照片上没认出产品信息');
+
+        var stamp = Date.now().toString(36);
+        var shots = blobs.map(function (b, i) {
+          return { path: 'products/' + pid + '-' + stamp + '-' + i + '.jpg', blob: b };
+        });
+
+        var next = allProducts().map(function (p) {
+          if (p.id !== pid) return p;
+          var add = {};
+          // 只补空的，你自己填过的不动
+          ['brand', 'category', 'size', 'price', 'spec', 'note'].forEach(function (f) {
+            if ((p[f] === undefined || p[f] === '') && x[f]) add[f] = x[f];
+          });
+          var buy = buyFrom(x);
+          if (buy && !hasSameBuy(p.purchases, buy)) {
+            add.purchases = (p.purchases || []).concat([buy]);
+          }
+          add.photos = (p.photos || []).concat(shots.map(function (s) { return s.path; }));
+          return Object.assign({}, p, add);
+        });
+
+        var got = [x.size, x.price ? x.price + ' 元' : '', x.spec].filter(Boolean).join(' · ');
+        statusEl.textContent = got ? '认出：' + got : '照片已存下，没认出新字段';
+        return saveProducts(next, '产品库：从照片补充信息', shots);
+      });
+    }).then(function () {
+      refresh('products');
+    }).catch(function (e) {
+      statusEl.textContent = '失败：' + (e.message || e);
+    });
+  }
+
   /* 拍产品 → AI 识别 → 只把【库里没有的】加进去 */
   function scanProducts(files) {
     if (!files || !files.length) return;
@@ -2665,6 +2807,13 @@
         ['brand', 'category', 'size', 'price', 'spec', 'note'].forEach(function (f) {
           if ((p[f] === undefined || p[f] === '') && x[f]) add[f] = x[f];
         });
+        /* 价格和规格是「这一次买」的信息，不只是产品属性 ——
+           同一件会反复回购，价格和渠道每次都可能不一样。
+           所以除了补字段，还要落一条购买记录。 */
+        var buy = buyFrom(x);
+        if (buy && !hasSameBuy(p.purchases, buy)) {
+          add.purchases = (p.purchases || []).concat([buy]);
+        }
         if (Object.keys(add).length) {
           merged[at] = Object.assign({}, p, add);
           patched++;

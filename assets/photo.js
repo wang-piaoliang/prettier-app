@@ -18,9 +18,12 @@
 (function () {
   'use strict';
 
-  var MAX_EDGE = 1600;      // 够看清毛孔和色斑，又不至于几 MB
+  /* 这是一份要放大看毛孔、色斑、细纹的档案，
+     压太狠就失去意义了 —— 用户反馈「在相册里比在 App 里清晰」。
+     2560 边长在 iPhone 上放大两三倍仍然锐利，一张约 1MB。 */
+  var MAX_EDGE = 2560;
   var TARGET_LUMA = 0.56;
-  var QUALITY = 0.86;
+  var QUALITY = 0.92;
 
   function loadImage(blob) {
     return new Promise(function (resolve, reject) {
