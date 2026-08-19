@@ -1030,11 +1030,20 @@
     };
 
     host.innerHTML = '<div class="section-title">在跟的问题</div>' +
-      ml.map(card).join('') + weightHTML() + procedureHTML();
+      ml.map(card).join('') + careHTML() + weightHTML() + procedureHTML();
 
     if (!host.dataset.bound) {
       host.dataset.bound = '1';
       host.addEventListener('click', function (ev) {
+        var am = ev.target.closest('#addMask');
+        if (am) return openCareEditor(am.closest('.care-add'), 'mask');
+        var ae = ev.target.closest('#addEvent');
+        if (ae) return openCareEditor(ae.closest('.care-add'), 'event');
+        var ce = ev.target.closest('[data-c-edit]');
+        if (ce) return openCareEditor(ce.closest('.care-row'), null, ce.dataset.cEdit);
+        var cx = ev.target.closest('[data-c-del]');
+        if (cx) return deleteCare(cx.dataset.cDel);
+
         var aw = ev.target.closest('#addWeight');
         if (aw) return openWeightEditor(aw);
         var we = ev.target.closest('[data-w-edit]');
@@ -1055,6 +1064,193 @@
   /* 体重单独一区。
      对这份档案它不是附带信息 —— 眶周脂肪垫薄是泪沟的主因，
      而排除注射之后，增重是唯一能补回体积的途径，所以值得单独跟。 */
+
+  /* ================= 护肤记录 =================
+     两类东西记在一起，因为它们回答的是同一个问题：
+     「最近皮肤变化，是什么带来的？」
+
+       · 敷了什么 —— 从面膜/唇膜/眼膜里选，打分，可以反复打
+       · 做了什么 —— 吃烤肉、熬夜、运动…… 这些也会写在脸上
+
+     所以不分成两个列表，按时间混排 —— 翻的时候才看得出前后因果。 */
+
+  function careList() {
+    return ((state.data && state.data.careLog) || []).slice()
+      .sort(function (x, y) { return (x.at || '') < (y.at || '') ? 1 : -1; });
+  }
+
+  // 能敷的：面膜、唇膜、眼膜
+  function maskProducts() {
+    return allProducts().filter(function (p) {
+      if (p.status === 'retired') return false;
+      var hay = (p.category || '') + ' ' + (p.name || '') + ' ' + (p.short || '');
+      return /面膜|眼膜|唇膜/.test(hay);
+    });
+  }
+
+  function careTitle(c) {
+    if (c.pid) return prodLabel(c.pid) + (c.variant ? ' · ' + c.variant : '');
+    return c.what || '';
+  }
+
+  function careHTML() {
+    /* 两行排版：手机上一行塞不下「日期+名称+分数+备注+两个按钮」，
+       挤在一行的结果是名称被备注顶没了。 */
+    var rows = careList().map(function (c) {
+      return '<div class="care-row" data-cid="' + esc(c.id) + '">' +
+        '<div class="cr-top">' +
+          '<b>' + esc(fmtDate((c.at || '').slice(0, 10))) + '</b>' +
+          '<span class="care-what">' + esc(careTitle(c)) + '</span>' +
+          (c.score != null
+            ? '<span class="pill ' + pillLevel(c.score) + '">' + c.score.toFixed(1) + '</span>'
+            : '') +
+          '<button class="rv-edit" data-c-edit="' + esc(c.id) + '" aria-label="改">✎</button>' +
+          '<button class="rv-edit" data-c-del="' + esc(c.id) + '" aria-label="删">×</button>' +
+        '</div>' +
+        (c.note ? '<div class="cr-note">' + esc(c.note) + '</div>' : '') +
+      '</div>';
+    }).join('');
+
+    return '<div class="section-title">护肤记录</div>' +
+      '<div class="card" id="careCard">' +
+        '<div class="care-add">' +
+          '<button class="more-toggle" id="addMask" type="button">＋ 敷了什么</button>' +
+          '<button class="more-toggle" id="addEvent" type="button">＋ 做了什么</button>' +
+        '</div>' +
+        (rows ? '<div class="w-list">' + rows + '</div>'
+              : '<div class="tiny">敷了面膜、或者吃了什么做了什么，都可以记在这儿。</div>') +
+      '</div>';
+  }
+
+  function openCareEditor(anchor, kind, editId) {
+    if (document.getElementById('c-edit')) return;
+    var cur = editId
+      ? careList().filter(function (x) { return x.id === editId; })[0]
+      : null;
+    if (cur) kind = cur.pid ? 'mask' : 'event';
+
+    var masks = maskProducts();
+    var opts = masks.map(function (p) {
+      return '<option value="' + esc(p.id) + '"' +
+        (cur && cur.pid === p.id ? ' selected' : '') + '>' + esc(shortName(p)) + '</option>';
+    }).join('');
+
+    // 选了有款式的产品，再选是哪一款
+    var variantSel = '';
+    var chosen = cur && cur.pid ? prodById(cur.pid) : masks[0];
+    if (chosen && variantList(chosen).length) {
+      variantSel = '<select id="c-variant" style="margin-top:8px">' +
+        '<option value="">款式（可不选）</option>' +
+        variantList(chosen).map(function (v) {
+          return '<option value="' + esc(v) + '"' +
+            (cur && cur.variant === v ? ' selected' : '') + '>' + esc(v) + '</option>';
+        }).join('') + '</select>';
+    }
+
+    var box = el(
+      '<div class="inline-edit" id="c-edit">' +
+        (kind === 'mask'
+          ? (masks.length
+              ? '<select id="c-pid">' + opts + '</select>' + variantSel
+              : '<div class="tiny">产品库里还没有面膜/眼膜/唇膜</div>')
+          : '<input type="text" id="c-what" placeholder="吃了 / 做了什么，例：吃烤肉、熬夜、做了光子"' +
+            (cur && cur.what ? ' value="' + esc(cur.what) + '"' : '') + '>') +
+        '<div class="w-form" style="margin-top:8px">' +
+          '<input type="date" id="c-date" value="' +
+            (cur ? (cur.at || '').slice(0, 10) : todayISO()) + '">' +
+          '<input type="number" id="c-score" step="0.1" min="0" max="5" inputmode="decimal" ' +
+            'placeholder="评分 0-5（可留空）"' +
+            (cur && cur.score != null ? ' value="' + cur.score + '"' : '') + '>' +
+        '</div>' +
+        '<input type="text" id="c-note" placeholder="备注：什么感觉、之后皮肤怎么样" style="margin-top:8px"' +
+          (cur && cur.note ? ' value="' + esc(cur.note) + '"' : '') + '>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">记下</button>' +
+        '</div>' +
+      '</div>'
+    );
+    anchor.replaceWith(box);
+
+    // 换产品要换款式列表
+    var pidSel = box.querySelector('#c-pid');
+    if (pidSel) {
+      pidSel.addEventListener('change', function () {
+        var p = prodById(this.value);
+        var vs = p ? variantList(p) : [];
+        var old = box.querySelector('#c-variant');
+        if (old) old.remove();
+        if (!vs.length) return;
+        var sel = el('<select id="c-variant" style="margin-top:8px">' +
+          '<option value="">款式（可不选）</option>' +
+          vs.map(function (v) { return '<option>' + esc(v) + '</option>'; }).join('') +
+          '</select>');
+        pidSel.insertAdjacentElement('afterend', sel);
+      });
+    }
+
+    box.querySelector('.ie-cancel').addEventListener('click', function () {
+      box.remove();
+      go('mainlines');
+    });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var scoreRaw = box.querySelector('#c-score').value.trim();
+      var score = scoreRaw === '' ? null : Number(scoreRaw);
+      if (score != null && (isNaN(score) || score < 0 || score > 5)) {
+        return toast('评分填 0 到 5', true);
+      }
+      var date = box.querySelector('#c-date').value || todayISO();
+      var rec = {
+        id: cur ? cur.id : 'c' + Date.now().toString(36),
+        // 存到分钟：同一天敷两次也分得清先后
+        at: date + 'T' + (cur ? (cur.at || '').slice(11, 16) || '12:00' : nowLocal().slice(11, 16)),
+        note: box.querySelector('#c-note').value.trim() || undefined,
+      };
+      if (score != null) rec.score = Math.round(score * 10) / 10;
+
+      if (kind === 'mask') {
+        var sel = box.querySelector('#c-pid');
+        if (!sel || !sel.value) return toast('先选一个产品', true);
+        rec.pid = sel.value;
+        var vs = box.querySelector('#c-variant');
+        if (vs && vs.value) rec.variant = vs.value;
+      } else {
+        var what = box.querySelector('#c-what').value.trim();
+        if (!what) return toast('写一下做了什么', true);
+        rec.what = what;
+      }
+
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      box.remove();
+      saveCare(rec);
+    });
+  }
+
+  function saveCare(rec) {
+    var list = ((state.data && state.data.careLog) || [])
+      .filter(function (x) { return x.id !== rec.id; })
+      .concat([rec]);
+    persistCare(list, '护肤记录：' + careTitle(rec));
+  }
+
+  function deleteCare(id) {
+    var c = careList().filter(function (x) { return x.id === id; })[0];
+    if (!c || !confirm('删掉「' + careTitle(c) + '」这条？')) return;
+    persistCare(careList().filter(function (x) { return x.id !== id; }),
+                '护肤记录：删除 ' + careTitle(c));
+  }
+
+  function persistCare(list, msg) {
+    // 先本地生效，不让人对着转圈等
+    if (state.data) state.data.careLog = list;
+    refresh('mainlines');
+    return GitStore.updateJSON('settings.json', function (remote) {
+      var base = remote || {};
+      base.careLog = list;
+      return base;
+    }, msg).catch(function (e) { toast('保存失败：' + (e.message || e), true); });
+  }
+
   function weightHTML() {
     var ws = ((state.data && state.data.weights) || []).slice()
       .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
@@ -2970,8 +3166,10 @@
     };
     /* 名称不算重复：上面标题一行放不下会截断（ESSENCE FOUNDATI…），
        详情里必须能看到完整的名字。品牌、类别、起用日期在标题里是完整的。 */
-    var HEADER_FIELDS = { short: 1, brand: 1, category: 1, start: 1, variants: 1 };
-    // 全名和上面显示的名字一样就不重复列
+    /* 显示名要留在这儿：它是到处引用的那个名字，也是最常改的。
+       之前想着「标题里已经有了」把它隐掉，结果反而没地方改。 */
+    var HEADER_FIELDS = { brand: 1, category: 1, start: 1, variants: 1 };
+    // 全名和显示名一样就不重复列
     if (shortName(p) === p.name) HEADER_FIELDS.name = 1;
 
     // 默认只读，点 ✎ 才切成输入框 —— 一打开就满屏输入框太吵

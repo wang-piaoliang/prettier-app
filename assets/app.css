@@ -1259,3 +1259,29 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
   padding: 3px 9px; font-family: var(--sans); font-size: 11.5px; color: var(--ink-soft);
   background: var(--card-2);
 }
+
+/* 护肤记录：和体重一套小字排版，但分两行 —— 
+   一行塞「日期+名称+分数+备注+两个按钮」在手机上必然挤没一项。 */
+.care-add { display: flex; gap: 10px; margin-bottom: 4px; }
+.care-add button { flex: 1; margin-top: 0; border-top: none; }
+.care-row { padding: 7px 0; border-bottom: 1px dashed var(--line); }
+.care-row:last-child { border-bottom: none; }
+.cr-top {
+  display: flex; align-items: center; gap: 9px;
+  font-family: var(--sans); font-size: 13px;
+}
+.cr-top b { flex: 0 0 76px; font-weight: 400; color: var(--ink-faint); font-size: 12px; }
+.care-row .care-what {
+  flex: 1; min-width: 0; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.care-row .pill { flex: none; }
+.cr-note {
+  margin: 3px 0 0 85px;
+  font-family: var(--sans); font-size: 12px; line-height: 1.6; color: var(--ink-faint);
+}
+#c-edit select, #c-edit input[type="text"] {
+  width: 100%; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card);
+  font-family: var(--sans); font-size: 16px;
+}
