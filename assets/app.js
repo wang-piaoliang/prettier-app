@@ -471,15 +471,24 @@
      跟今天的上一次比，永远比不出东西来。
      真正有意义的是「今天和昨天换了什么」。 */
   function prevUsed(e, kind) {
-    var all = newestFirst((state.data && state.data.entries) || []);
-    for (var i = 0; i < all.length; i++) {
-      var x = all[i];
-      if (!x.date || !e.date || x.date >= e.date) continue;   // 只看更早的【某一天】
-      if (kind === 'makeup' && x.face !== 'makeup') continue;
+    /* ⚠️ 要拿前一天【最后一条】记录来比。
+       同一天常有好几条（早上、下午、晚上），只有晚上那条补了腮红的话，
+       拿白天那条比，第二天就会把腮红判成「新用的」——
+       它其实已经连着用好几天了。 */
+    var all = ((state.data && state.data.entries) || []).filter(function (x) {
+      if (!x.date || !e.date || x.date >= e.date) return false;
+      if (kind === 'makeup' && x.face !== 'makeup') return false;
       var list = x.products && x.products[kind];
-      if (list && list.length) return list;
-    }
-    return null;
+      return !!(list && list.length);
+    }).sort(function (p, q) {
+      var pa = (p.at || p.date), qa = (q.at || q.date);
+      return pa < qa ? 1 : pa > qa ? -1 : 0;
+    });
+    if (!all.length) return null;
+
+    var day = all[0].date;                       // 最近的有记录的那一天
+    var sameDay = all.filter(function (x) { return x.date === day; });
+    return sameDay[0].products[kind];            // 那天最晚的一条
   }
 
   /* 默认折叠：天天基本一样，全列出来是噪音。
@@ -2998,8 +3007,8 @@
   var SUBCATS = {
     makeup: [
       { key: 'base', label: '底妆', re: /粉底|粉霜|遮瑕|粉饼|散粉|蜜粉|定妆/ },
+      { key: 'color', label: '彩妆', re: /腮红|修容|高光|眼影|眼线|睫毛膏|眉|唇|口红/ },
       { key: 'tool', label: '工具', re: /粉扑|美妆蛋|刷|睫毛夹|眉笔刀/ },
-      { key: 'color', label: '彩妆', re: /./ },          // 兜底：剩下的都算彩妆
     ],
     skincare: [
       { key: 'mask', label: '面膜', re: /面膜|眼膜|唇膜/ },
@@ -3010,6 +3019,11 @@
 
   function subCatOf(p) {
     var list = SUBCATS[kindOf(p)] || [];
+    // 你手动改过的优先 —— 自动归类总有猜错的时候
+    if (p.sub) {
+      var hit = list.filter(function (x) { return x.key === p.sub; })[0];
+      if (hit) return hit;
+    }
     var hay = (p.category || '') + ' ' + (p.name || '') + ' ' + (p.short || '');
     for (var i = 0; i < list.length; i++) {
       if (list[i].re.test(hay)) return list[i];
@@ -3312,21 +3326,29 @@
     });
   }
 
-  function openBuyEditor(pid, anchor) {
+  /* editIdx 有值就是在改已有的那一条 —— AI 认错了日期、价格得能纠正。 */
+  function openBuyEditor(pid, anchor, editIdx) {
     if (anchor.parentNode.querySelector('.inline-edit')) return;
+    var p = allProducts().filter(function (x) { return x.id === pid; })[0];
+    var buys = sortedBuys(p);
+    var cur = editIdx != null ? buys[editIdx] : null;
+    var v = function (k) { return cur && cur[k] != null ? esc(String(cur[k])) : ''; };
+
     var box = el(
       '<div class="inline-edit">' +
         '<div class="w-form">' +
-          '<input type="date" class="b-date" value="' + todayISO() + '">' +
-          '<input type="number" class="b-price" inputmode="decimal" placeholder="价格">' +
+          '<input type="date" class="b-date" value="' + (cur ? esc(cur.date || '') : todayISO()) + '">' +
+          '<input type="number" class="b-price" inputmode="decimal" placeholder="价格" value="' + v('price') + '">' +
         '</div>' +
         '<div class="w-form" style="margin-top:8px">' +
-          '<input type="text" class="b-size" placeholder="规格 如 50ml">' +
-          '<input type="text" class="b-where" placeholder="渠道 如 天猫">' +
+          '<input type="text" class="b-size" placeholder="规格 如 50ml" value="' + v('size') + '">' +
+          '<input type="text" class="b-where" placeholder="渠道 如 天猫" value="' + v('where') + '">' +
         '</div>' +
+        '<input type="text" class="b-spec" placeholder="款式/色号（可留空）" ' +
+          'style="margin-top:8px" value="' + v('spec') + '">' +
         '<div class="ie-act">' +
           '<button class="ie-cancel" type="button">取消</button>' +
-          '<button class="ie-ok" type="button">记下</button>' +
+          '<button class="ie-ok" type="button">' + (cur ? '保存' : '记下') + '</button>' +
         '</div>' +
       '</div>'
     );
@@ -3339,31 +3361,36 @@
         price: isFinite(price) && price > 0 ? price : undefined,
         size: box.querySelector('.b-size').value.trim() || undefined,
         where: box.querySelector('.b-where').value.trim() || undefined,
+        spec: box.querySelector('.b-spec').value.trim() || undefined,
       };
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       box.remove();
       var next = allProducts().map(function (x) {
         if (x.id !== pid) return x;
         var y = Object.assign({}, x);
-        y.purchases = (y.purchases || []).concat([rec]);
+        var list = sortedBuys(y).slice();
+        if (cur) list[editIdx] = rec; else list.push(rec);
+        y.purchases = list;
         // 第一次购买顺手当作开始使用日期
         if (!y.start) y.start = rec.date;
-        if (!y.price && rec.price) y.price = rec.price;
-        if (!y.size && rec.size) y.size = rec.size;
         return y;
       });
-      saveProducts(next, '产品库：记录一次购买')
-        .then(function () { toast('已记下'); })
+      saveProducts(next, cur ? '产品库：改一条购买记录' : '产品库：记录一次购买')
+        .then(function () { toast(cur ? '已改' : '已记下'); })
         .catch(function (e) { toast('失败：' + (e.message || e), true); });
     });
+  }
+
+  // 购买记录统一按日期倒序，显示和改用的是同一份顺序，索引才不会错位
+  function sortedBuys(p) {
+    return ((p && p.purchases) || []).slice()
+      .sort(function (x, y) { return (x.date || '') < (y.date || '') ? 1 : -1; });
   }
 
   function deleteBuy(pid, idx) {
     var p = allProducts().filter(function (x) { return x.id === pid; })[0];
     if (!p) return;
-    var sorted = (p.purchases || []).slice().sort(function (a, b) {
-      return a.date < b.date ? 1 : -1;
-    });
+    var sorted = sortedBuys(p);
     var target = sorted[idx];
     if (!target) return;
     var next = allProducts().map(function (x) {
@@ -3510,7 +3537,8 @@
     var readRows = PROD_FIELDS.filter(function (f) {
       if (p[f.k] == null || p[f.k] === '') return false;
       if (HEADER_FIELDS[f.k]) return false;
-      if ((f.k === 'price' || f.k === 'size') && buysAll.length && inBuys(f.k)) return false;
+      // 有购买记录了，价格和规格那边写得更清楚（还分得开每次回购）
+      if ((f.k === 'price' || f.k === 'size') && buysAll.length) return false;
       if (f.k === 'spec' && buysAll.length) return false;   // 已并进购买记录那一行
       return true;
     }).map(function (f) {
@@ -3530,9 +3558,7 @@
        但索引要按【原数组】算 —— 显示是倒序的，直接用显示位置会改错人。 */
     /* 购买记录：同一件会反复回购，价格和渠道都可能变。
        只留一个「购买时间」字段是不够的。 */
-    var buys = (p.purchases || []).slice().sort(function (a, b) {
-      return a.date < b.date ? 1 : -1;
-    });
+    var buys = sortedBuys(p);
     var buyHTML = '<div class="pd-hist">' +
       '<b>购买记录<button class="ph-add" data-buy-add="' + esc(p.id) + '" ' +
         'type="button" aria-label="记一次购买">＋</button></b>' +
@@ -3546,6 +3572,7 @@
                           b.spec || (i === buys.length - 1 ? p.spec : '') || '',
                           b.where || '']
                 .filter(Boolean).map(esc).join(' · ') + '</span>' +
+              '<button class="rv-edit" data-buy-edit="' + i + '" aria-label="改">✎</button>' +
               '<button class="rv-edit" data-buy-del="' + i + '" aria-label="删">×</button>' +
             '</div>';
           }).join('')
@@ -3583,6 +3610,23 @@
       '</div>' +
       hist + buyHTML +
       /* 照片小节：＋ 挂在标题右边，识别到的信息自动补进产品和购买记录 */
+      // 归类改不了的话，自动猜错就只能一直错着
+      '<div class="pd-cats">' +
+        '<div class="segmented sm" data-catset="kind">' +
+          KINDS.map(function (k) {
+            return '<button type="button" data-v="' + k.key + '"' +
+              (kindOf(p) === k.key ? ' class="on"' : '') + '>' + esc(k.label) + '</button>';
+          }).join('') +
+        '</div>' +
+        ((SUBCATS[kindOf(p)] || []).length > 1
+          ? '<div class="segmented sm" data-catset="sub" style="margin-top:6px">' +
+            SUBCATS[kindOf(p)].map(function (sc) {
+              return '<button type="button" data-v="' + esc(sc.key) + '"' +
+                (subCatOf(p).key === sc.key ? ' class="on"' : '') + '>' + esc(sc.label) + '</button>';
+            }).join('') + '</div>'
+          : '') +
+      '</div>' +
+
       /* 合并和删除都是很少用、且用错了麻烦的动作 ——
          缩成一行小图标放在最下面就够，不该占一整行文字。 */
       '<div class="pd-tools">' +
@@ -3617,8 +3661,19 @@
       if (dl) return deleteReview(id, Number(dl.dataset.rvDel));
       var ba = ev.target.closest('[data-buy-add]');
       if (ba) return openBuyEditor(id, ba);
+      var be = ev.target.closest('[data-buy-edit]');
+      if (be) return openBuyEditor(id, be.closest('.prod-review'), Number(be.dataset.buyEdit));
       var bd = ev.target.closest('[data-buy-del]');
       if (bd) return deleteBuy(id, Number(bd.dataset.buyDel));
+      var cs = ev.target.closest('[data-catset] button');
+      if (cs) {
+        var which = cs.closest('[data-catset]').dataset.catset;
+        var patch = which === 'kind' ? { kind: cs.dataset.v, sub: undefined }
+                                     : { sub: cs.dataset.v };
+        return saveProducts(allProducts().map(function (x) {
+          return x.id === id ? Object.assign({}, x, patch) : x;
+        }), '产品库：调整 ' + shortName(p) + ' 的归类');
+      }
       var rn = ev.target.closest('[data-rename]');
       if (rn) return openRenameBox(rn.dataset.rename, rn.closest('.pd-rename'));
       var mg = ev.target.closest('[data-merge]');
