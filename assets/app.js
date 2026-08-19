@@ -38,7 +38,24 @@
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+
+  /* 所有多行输入框都随内容长高。
+     写长了看不见前面写过什么，很难接着写 —— 备注、评价、小结都一样。 */
+  function autoGrow(root) {
+    $$('textarea', root || document).forEach(function (t) {
+      if (t.dataset.grow) return;
+      t.dataset.grow = '1';
+      var fit = function () {
+        t.style.height = 'auto';
+        t.style.height = Math.min(t.scrollHeight + 2, 460) + 'px';
+      };
+      t.addEventListener('input', fit);
+      fit();
+    });
+  }
+
   function el(html) {
+    // 这里造出来的框大多带 textarea，统一挂上自动长高
     var t = document.createElement('template');
     t.innerHTML = html.trim();
     return t.content.firstElementChild;
@@ -1123,8 +1140,12 @@
       '</div>';
     };
 
-    host.innerHTML = '<div class="section-title">在跟的问题</div>' +
-      ml.map(card).join('') + careHTML() + weightHTML() + procedureHTML();
+    /* 顺序按看的频率来：体重每天称、护肤记录常写、
+       「在跟的问题」是长期背景，放最后。 */
+    host.innerHTML =
+      weightHTML() + careHTML() +
+      foldSection('ml', '在跟的问题', ml.map(card).join('')) +
+      procedureHTML();
 
     if (!host.dataset.bound) {
       host.dataset.bound = '1';
@@ -1137,6 +1158,21 @@
         if (ce) return openCareEditor(ce.closest('.care-row'), null, ce.dataset.cEdit);
         var cx = ev.target.closest('[data-c-del]');
         if (cx) return deleteCare(cx.dataset.cDel);
+
+        var mf = ev.target.closest('[data-mlfold]');
+        if (mf) {
+          var fk = mf.dataset.mlfold;
+          mlFold[fk] = !mlFold[fk];
+          mf.classList.toggle('closed', mlFold[fk]);
+          mf.nextElementSibling.hidden = mlFold[fk];
+          return;
+        }
+        var mm = ev.target.closest('[data-mlmore]');
+        if (mm) {
+          var mk = 'more:' + mm.dataset.mlmore;
+          mlFold[mk] = !mlFold[mk];
+          return refresh('mainlines');
+        }
 
         var aw = ev.target.closest('#addWeight');
         if (aw) return openWeightEditor(aw);
@@ -1167,6 +1203,30 @@
        · 做了什么 —— 吃烤肉、熬夜、运动…… 这些也会写在脸上
 
      所以不分成两个列表，按时间混排 —— 翻的时候才看得出前后因果。 */
+
+
+  /* 主线上这几块都能点标题折叠，默认只露最近 5 条。
+     不加箭头图标 —— 标题本身就是开关，多一个 icon 只是噪音。 */
+  var mlFold = {};
+
+  function foldSection(key, title, body, n) {
+    var closed = !!mlFold[key];
+    return '<div class="section-title fold' + (closed ? ' closed' : '') + '" ' +
+        'data-mlfold="' + esc(key) + '">' + esc(title) +
+        (n ? '<i>' + n + '</i>' : '') + '</div>' +
+      '<div class="ml-sec"' + (closed ? ' hidden' : '') + '>' + body + '</div>';
+  }
+
+  /* 只给最近 N 条，剩下的收在「还有 M 条」后面。
+     翻档案是从近往远翻，一上来就把两年的东西全铺开没有意义。 */
+  function limitRows(key, rows, n) {
+    n = n || 5;
+    if (rows.length <= n) return rows.join('');
+    var open = !!mlFold['more:' + key];
+    return (open ? rows : rows.slice(0, n)).join('') +
+      '<button class="more-toggle" type="button" data-mlmore="' + esc(key) + '">' +
+        (open ? '收起' : '还有 ' + (rows.length - n) + ' 条') + '</button>';
+  }
 
   function careList() {
     return ((state.data && state.data.careLog) || []).slice()
@@ -1203,17 +1263,16 @@
         '</div>' +
         (c.note ? '<div class="cr-note">' + esc(c.note) + '</div>' : '') +
       '</div>';
-    }).join('');
+    });
 
-    return '<div class="section-title">护肤记录</div>' +
-      '<div class="card" id="careCard">' +
+    return foldSection('care', '护肤记录', '<div class="card" id="careCard">' +
         '<div class="care-add">' +
           '<button class="more-toggle" id="addMask" type="button">＋ 敷了什么</button>' +
           '<button class="more-toggle" id="addEvent" type="button">＋ 做了什么</button>' +
         '</div>' +
-        (rows ? '<div class="w-list">' + rows + '</div>'
+        (rows.length ? '<div class="w-list">' + limitRows('care', rows) + '</div>'
               : '<div class="tiny">敷了面膜、或者吃了什么做了什么，都可以记在这儿。</div>') +
-      '</div>';
+      '</div>');
   }
 
   function openCareEditor(anchor, kind, editId) {
@@ -1374,7 +1433,7 @@
       ? weightChart(ws)
       : '';
 
-    var rows = ws.slice().reverse().slice(0, 8).map(function (w) {
+    var rows = ws.slice().reverse().map(function (w) {
       return '<div class="w-row" data-wd="' + esc(w.date) + '">' +
         '<b>' + esc(fmtDate(w.date)) + '</b>' +
         '<span>' + (w.kg * 2).toFixed(1) + ' 斤</span>' +
@@ -1382,10 +1441,9 @@
         '<button class="rv-edit" data-w-edit="' + esc(w.date) + '" aria-label="改">✎</button>' +
         '<button class="rv-edit" data-w-del="' + esc(w.date) + '" aria-label="删">×</button>' +
       '</div>';
-    }).join('');
+    });
 
-    return '<div class="section-title">体重</div>' +
-      '<div class="card" id="weightCard">' +
+    return foldSection('w', '体重', '<div class="card" id="weightCard">' +
         (last
           ? '<div class="w-now">' +
               '<span class="w-kg">' + (last.kg * 2).toFixed(1) + '<i>斤</i></span>' +
@@ -1397,10 +1455,10 @@
               '<span class="tiny" style="margin-left:auto">' + esc(fmtDate(last.date)) + '</span>' +
             '</div>' + chart
           : '<div class="tiny">还没有记录。</div>') +
-        (rows ? '<div class="w-list">' + rows + '</div>' : '') +
+        (rows.length ? '<div class="w-list">' + limitRows('w', rows) + '</div>' : '') +
         '<button class="more-toggle" id="addWeight" type="button" style="margin-top:6px">' +
           '＋ 记一次体重</button>' +
-      '</div>';
+      '</div>');
   }
 
   function weightChart(ws) {
@@ -1854,13 +1912,8 @@
     $('#fTime', host).addEventListener('change', syncAt);
     $('#fLight', host).addEventListener('input', function () { d.light = this.value; });
     var noteBox = $('#fNote', host);
-    /* 按内容自动长高：写长了看不见前面写过什么，很难接着写。 */
-    var grow = function (t) {
-      t.style.height = 'auto';
-      t.style.height = Math.min(t.scrollHeight + 2, 460) + 'px';
-    };
-    grow(noteBox);
-    noteBox.addEventListener('input', function () { d.note = this.value; grow(this); });
+    autoGrow(host);
+    noteBox.addEventListener('input', function () { d.note = this.value; });
     $('#fTags', host).addEventListener('input', function () {
       d.tags = this.value.split(/[\s,，、]+/).filter(Boolean);
     });
@@ -2178,9 +2231,14 @@
       running = false;
       renderQueue();
       renderPending();
-      // 悄悄和云端对齐，不打断正在看的页面
+      /* 悄悄和云端对齐，但【不要切换页面】。
+         以前跑完会 refresh(job.refreshView)，而 refresh 会切到那个视图 ——
+         你正在别处看，识别一完成就被拽到产品页去了。
+         只有你本来就停在那一页时才重画。 */
       var back = job.refreshView || 'timeline';
-      return loadData().then(function () { refresh(back); });
+      return loadData().then(function () {
+        if (state.view === back) refresh(back);
+      });
     }).catch(function (err) {
       job.state = 'failed';
       job.error = (err.step ? '「' + err.step + '」' : '') + (err.message || err);
@@ -2223,10 +2281,42 @@
     });
   }
 
+  var queueMini = false;
+
+
+  /* 队列条右滑收成一个小圆点：后台在跑，但不该一直横在页面底下挡路。
+     点圆点再展开。 */
+  function bindQueueSwipe() {
+    var host = $('#queue');
+    if (!host || host.dataset.sw) return;
+    host.dataset.sw = '1';
+    var x0 = null;
+    host.addEventListener('touchstart', function (ev) {
+      x0 = ev.touches[0].clientX;
+    }, { passive: true });
+    host.addEventListener('touchend', function (ev) {
+      if (x0 == null) return;
+      var dx = ev.changedTouches[0].clientX - x0;
+      x0 = null;
+      if (dx > 50 && !queueMini) { queueMini = true; renderQueue(); }
+      if (dx < -50 && queueMini) { queueMini = false; renderQueue(); }
+    }, { passive: true });
+  }
+
   function renderQueue() {
     var host = $('#queue');
+    host.classList.toggle('mini', queueMini);
     if (!queue.length) { host.hidden = true; host.innerHTML = ''; return; }
     host.hidden = false;
+    if (queueMini) {
+      var running0 = queue.filter(function (j) { return j.state === 'running'; })[0];
+      host.innerHTML = '<button class="q-dot" type="button" id="qExpand" ' +
+        'aria-label="展开进度">' + queue.length + '</button>';
+      $('#qExpand').addEventListener('click', function () {
+        queueMini = false; renderQueue();
+      });
+      return;
+    }
     host.innerHTML = queue.map(function (j, i) {
       if (j.state === 'failed') {
         return '<div class="qrow err"><span class="qtxt">' + esc(j.label) + ' · ' +
@@ -2642,6 +2732,7 @@
      控制变量法：改一两个产品，看妆效差别。
      所以对比要同时给出【照片并排】和【产品差在哪】。 */
   var cmpSel = [];
+  var cmpPick = [0, 0];
   var selectMode = false;
 
   function toggleCompare(id) {
@@ -2679,14 +2770,26 @@
       return String(x.at || x.date).localeCompare(String(y.at || y.date));
     });
 
-    var col = function (e) {
-      var ph = (e.photos || []).slice(0, 2);
+    /* 光线和角度不一样就比不出东西来，所以要能自己挑那一张。
+       上面一排缩略图，点中的那张在下面放大并排。 */
+    var col = function (e, side) {
+      var all = e.photos || [];
+      var pick = cmpPick[side];
+      if (pick == null || pick >= all.length) pick = 0;
+      cmpPick[side] = pick;
       return '<div class="cmp-col">' +
         '<div class="cmp-when">' + esc(fmtDate(e.date)) + '<i>' +
           esc((SLOT[slotOf(e)] || '') + ' ' + (fmtTime(e.at) || '')) + '</i></div>' +
-        '<div class="cmp-ph">' + ph.map(function (k) {
-          return '<img data-key="' + esc(k) + '" alt="">';
-        }).join('') + '</div>' +
+        (all.length > 1
+          ? '<div class="cmp-strip">' + all.map(function (k, i) {
+              return '<button type="button" class="cmp-th' + (i === pick ? ' on' : '') + '" ' +
+                'data-cmp-pick="' + side + '" data-i="' + i + '">' +
+                '<img data-key="' + esc(k) + '" alt=""></button>';
+            }).join('') + '</div>'
+          : '') +
+        '<div class="cmp-big">' +
+          (all.length ? '<img data-key="' + esc(all[pick]) + '" alt="">' : '') +
+        '</div>' +
         (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
       '</div>';
     };
@@ -2712,7 +2815,7 @@
     var host = $('#view-trend');
     host.innerHTML =
       '<div class="section-title">对比</div>' +
-      '<div class="cmp-grid">' + col(pair[0]) + col(pair[1]) + '</div>' +
+      '<div class="cmp-grid">' + col(pair[0], 0) + col(pair[1], 1) + '</div>' +
       '<div class="card" style="margin-top:16px">' +
         (same
           ? '<div class="tiny">两次用的产品一样 —— 差别不来自产品。</div>'
@@ -2724,7 +2827,13 @@
     $$('.view').forEach(function (v) { v.classList.remove('active'); });
     host.classList.add('active');
     hydratePhotos(host);
-    on('#cmpBack', 'click', function () { cmpSel = []; go('timeline'); });
+    on('#cmpBack', 'click', function () { cmpSel = []; cmpPick = [0, 0]; go('timeline'); });
+    host.addEventListener('click', function (ev) {
+      var th = ev.target.closest('[data-cmp-pick]');
+      if (!th) return;
+      cmpPick[Number(th.dataset.cmpPick)] = Number(th.dataset.i);
+      renderCompare();
+    });
   }
 
   /* ================= 产品库 ================= */
@@ -2876,6 +2985,31 @@
       .filter(Boolean);
   }
 
+
+  /* 二级分类：彩妆分底妆/彩妆/工具，护肤分日常/面膜。
+     一整列 30 多件平铺，找一支眼线要划半天。 */
+  var SUBCATS = {
+    makeup: [
+      { key: 'base', label: '底妆', re: /粉底|粉霜|遮瑕|粉饼|散粉|蜜粉|定妆/ },
+      { key: 'tool', label: '工具', re: /粉扑|美妆蛋|刷|睫毛夹|眉笔刀/ },
+      { key: 'color', label: '彩妆', re: /./ },          // 兜底：剩下的都算彩妆
+    ],
+    skincare: [
+      { key: 'mask', label: '面膜', re: /面膜|眼膜|唇膜/ },
+      { key: 'daily', label: '日常', re: /./ },
+    ],
+    device: [{ key: 'all', label: '仪器', re: /./ }],
+  };
+
+  function subCatOf(p) {
+    var list = SUBCATS[kindOf(p)] || [];
+    var hay = (p.category || '') + ' ' + (p.name || '') + ' ' + (p.short || '');
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].re.test(hay)) return list[i];
+    }
+    return list[list.length - 1] || { key: 'all', label: '其他' };
+  }
+
   function sortProducts(rows) {
     return rows.slice().sort(function (a, b) {
       var ao = a.ord, bo = b.ord;
@@ -2905,13 +3039,26 @@
       }));
       if (!rows.length) return;
       var closed = prodFold[k.key];
+      // 二级分类，各自也能折叠
+      var subs = (SUBCATS[k.key] || []).map(function (sc) {
+        var mine = rows.filter(function (p) { return subCatOf(p).key === sc.key; });
+        if (!mine.length) return '';
+        var sk = k.key + ':' + sc.key;
+        var sClosed = prodFold[sk];
+        return '<div class="sub-head' + (sClosed ? ' closed' : '') + '" data-kind="' + esc(sk) + '">' +
+            esc(sc.label) + '<span>' + mine.length + '</span>' +
+            '<span class="ml-caret">▾</span>' +
+          '</div>' +
+          '<div class="prod-list"' + (sClosed ? ' hidden' : '') + '>' +
+            mine.map(prodCardHTML).join('') + '</div>';
+      }).join('');
+
       body +=
         '<div class="cat-head' + (closed ? ' closed' : '') + '" data-kind="' + k.key + '">' +
           esc(k.label) + '<span>' + rows.length + '</span>' +
           '<span class="ml-caret">▾</span>' +
         '</div>' +
-        '<div class="prod-list"' + (closed ? ' hidden' : '') + '>' +
-          rows.map(prodCardHTML).join('') + '</div>';
+        '<div class="cat-body"' + (closed ? ' hidden' : '') + '>' + subs + '</div>';
     });
 
     var retired = list.filter(function (p) { return p.status === 'retired'; });
@@ -4394,6 +4541,7 @@
     // 灯箱：点开后可左右滑动看同一条记录里的全部照片
     bindLightbox();
     bindZoom();
+    bindQueueSwipe();
     checkForUpdate();
 
     if (state.owner && state.repo) {
