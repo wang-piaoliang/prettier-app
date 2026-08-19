@@ -1375,3 +1375,5 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
 .note-fold .note { margin-top: 6px; padding-top: 8px; }
 .note-fold.open .prod-fold .ml-caret { transform: rotate(0); }
 .note-fold:not(.open) .prod-fold .ml-caret { transform: rotate(-90deg); }
+
+.rating-row { margin-bottom: 8px; }

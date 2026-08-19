@@ -382,6 +382,9 @@
     var pills = [];
     if (e.face) pills.push('<span class="pill">' + esc(FACE[e.face] || e.face) + '</span>');
 
+    if (e.rating != null) {
+      pills.push('<span class="pill ' + pillLevel(e.rating) + '">' + e.rating.toFixed(1) + '</span>');
+    }
     if (ov != null) pills.push('<span class="pill ' + pillLevel(ov) + '">肤况 ' + ov.toFixed(1) + '</span>');
     if (e.makeup && typeof e.makeup.fit === 'number') {
       pills.push('<span class="pill ' + pillLevel(e.makeup.fit) + '">妆 ' + e.makeup.fit + '</span>');
@@ -422,9 +425,9 @@
         /* 卡片上只放【你自己写的】和事实数据：备注、用了什么产品、分数。
            AI 那些分区描述、光线说明、妆容点评一律不上卡片 ——
            那是它的观察笔记，不是你的记录。数据还在，需要时另说。 */
-        ((prod || e.note)
+        ((prod || e.note || true)
           ? '<div class="entry-detail" id="dt-' + esc(e.id) + '">' +
-              prod + noteHTML(e) +
+              ratingRow(e) + prod + noteHTML(e) +
             '</div>'
           : '')
       )) + '</article>';
@@ -467,6 +470,74 @@
 
   /* 备注默认折叠，和「用的产品」一套。
      收起时给一行摘要，知道里面有东西、值不值得点开。 */
+
+  /* 这一组照片本身也能打个分：今天这个状态几分。
+     和产品评分、护肤记录用同一个滑条，一处学会处处一样。 */
+  function ratingRow(e) {
+    var v = e.rating;
+    return '<button class="prod-fold rating-row" type="button" data-rate="' + esc(e.id) + '">' +
+      '<b>评分</b><span class="pf-sum">' +
+      (v == null ? '点一下打分' : v.toFixed(1) + ' / 5') + '</span>' +
+      '<span class="ml-caret" style="transform:none">✎</span>' +
+    '</button>';
+  }
+
+  function openEntryRating(id, anchor) {
+    if (anchor.parentNode.querySelector('.inline-edit')) return;
+    var e = ((state.data && state.data.entries) || [])
+      .filter(function (x) { return x.id === id; })[0];
+    if (!e) return;
+    var v = e.rating == null ? 3 : e.rating;
+    var box = el(
+      '<div class="inline-edit">' +
+        '<div class="score-row">' +
+          '<span class="score-val">' + v.toFixed(1) + '</span>' +
+          '<input type="range" min="0" max="5" step="0.1" value="' + v + '">' +
+        '</div>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          (e.rating != null
+            ? '<button class="ie-cancel" id="rate-clear" type="button">清除</button>' : '') +
+          '<button class="ie-ok" type="button">记下</button>' +
+        '</div>' +
+      '</div>'
+    );
+    anchor.insertAdjacentElement('afterend', box);
+    var range = box.querySelector('input');
+    var val = box.querySelector('.score-val');
+    range.addEventListener('input', function () { val.textContent = Number(this.value).toFixed(1); });
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    var clr = box.querySelector('#rate-clear');
+    if (clr) clr.addEventListener('click', function () { box.remove(); saveEntryRating(id, null); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var n = Number(range.value);
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      box.remove();
+      saveEntryRating(id, n);
+    });
+  }
+
+  function saveEntryRating(id, score) {
+    var list = ((state.data && state.data.entries) || []).map(function (x) {
+      if (x.id !== id) return x;
+      var y = Object.assign({}, x);
+      if (score == null) delete y.rating; else y.rating = score;
+      return y;
+    });
+    if (state.data) state.data.entries = list;   // 先本地生效
+    redrawTimeline();
+
+    GitStore.updateJSON('entries.json', function (remote) {
+      return (remote || []).map(function (x) {
+        if (x.id !== id) return x;
+        var y = Object.assign({}, x);
+        if (score == null) delete y.rating; else y.rating = score;
+        return y;
+      });
+    }, score == null ? '清除评分' : '打分 ' + score.toFixed(1))
+      .catch(function (err) { toast('保存失败：' + (err.message || err), true); });
+  }
+
   function noteHTML(e) {
     if (!e.note) return '';
     var open = !!noteOpen[e.id];
@@ -678,6 +749,8 @@
       if (ev.target.closest('#cmpGo')) return renderCompare();
       if (ev.target.closest('#cmpClear')) { cmpSel = []; selectMode = false; syncTopBtn(); return redrawTimeline(); }
 
+      var rt = ev.target.closest('[data-rate]');
+      if (rt) return openEntryRating(rt.dataset.rate, rt);
       var no = ev.target.closest('[data-note-open]');
       if (no) {
         var nid = no.dataset.noteOpen;
