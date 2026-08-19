@@ -1151,19 +1151,13 @@
           : '');
     };
 
-    // 打分条：和记皮肤那边同一个控件，半颗＝0.5，长按可微调
+    /* 评分用滑条，和产品评分一模一样 —— 同一个动作就该是同一个控件。
+       之前那排小圆点在这儿显得很突兀，也点不出 4.2 这种。 */
     var scoreHTML = function () {
-      var v = sel.score;
-      var dots = '';
-      for (var i = 1; i <= 5; i++) {
-        dots += '<button type="button" data-cs="' + i + '" class="' +
-          (v >= i ? 'on' : (v >= i - 0.5 ? 'half' : '')) + '">●</button>';
-      }
-      return '<div class="rate c-rate">' +
-        '<span class="name">评分</span>' +
-        '<span class="stars">' + dots + '</span>' +
-        '<span class="c-num">' + (v == null ? '未打分' : v.toFixed(1)) + '</span>' +
-        (v != null ? '<button class="clear" type="button" data-cs-clear="1">清除</button>' : '') +
+      var v = sel.score == null ? 3 : sel.score;
+      return '<div class="score-row">' +
+        '<span class="score-val">' + v.toFixed(1) + '</span>' +
+        '<input type="range" id="c-range" min="0" max="5" step="0.1" value="' + v + '">' +
       '</div>';
     };
 
@@ -1204,14 +1198,12 @@
     }
 
     var scoreHost = box.querySelector('#c-scorebox');
-    scoreHost.addEventListener('click', function (ev) {
-      if (ev.target.closest('[data-cs-clear]')) { sel.score = null; scoreHost.innerHTML = scoreHTML(); return; }
-      var sb = ev.target.closest('[data-cs]');
-      if (!sb) return;
-      var n = Number(sb.dataset.cs);
-      // 再点同一颗＝减半颗，这样 3.5、4.5 也点得出来
-      sel.score = (sel.score === n) ? n - 0.5 : n;
-      scoreHost.innerHTML = scoreHTML();
+    var cRange = scoreHost.querySelector('#c-range');
+    var cVal = scoreHost.querySelector('.score-val');
+    if (sel.score == null) sel.score = 3;
+    cRange.addEventListener('input', function () {
+      sel.score = Number(this.value);
+      cVal.textContent = sel.score.toFixed(1);
     });
 
     box.querySelector('.ie-cancel').addEventListener('click', function () {
@@ -1457,7 +1449,7 @@
   /* 产品库点选：手打产品名又慢又容易和库里对不上号。
      库里按顺序列出来，点一下就加/去掉，输入框跟着同步 ——
      输入框留着是为了记库里还没有的东西。 */
-  function pickerHTML(sel) {
+  function pickerHTML(sel, bare) {
     var list = allProducts().filter(function (p) { return p.status !== 'retired'; });
     if (!list.length) return '';
     var chosen = {};
@@ -1466,11 +1458,13 @@
     });
 
     // 按护肤 / 彩妆 / 仪器分组，组内按你定的使用顺序
-    var groups = [
-      { k: 'makeup', label: '彩妆' },
-      { k: 'skincare', label: '护肤' },
-      { k: 'device', label: '仪器' },
-    ];
+    var groups = bare
+      ? [{ k: 'skincare', label: '护肤' }, { k: 'device', label: '仪器' }]
+      : [
+          { k: 'makeup', label: '彩妆' },
+          { k: 'skincare', label: '护肤' },
+          { k: 'device', label: '仪器' },
+        ];
     var html = groups.map(function (g) {
       var rows = list.filter(function (p) { return kindOf(p) === g.k; })
         .sort(function (x, y) {
@@ -1504,17 +1498,14 @@
   }
 
   function productField(d) {
+    /* 只留点选，不要输入框。
+       下面的标签区已经把选了什么显示得很清楚了，
+       上面再放一行同样内容的文本框是重复的，还占地方。
+       素颜不出现彩妆 —— 没有彩妆可记。 */
+    var bare = d.face === 'bare';
     return '<div class="field"><label>今天用的产品' +
       (d.carriedFrom ? '（沿用 ' + fmtDate(d.carriedFrom) + '）' : '') + '</label>' +
-      '<div class="prod-edit">' +
-        '<div class="prow"><b>护肤</b>' +
-          '<input type="text" id="fSkincare" placeholder="顿号分隔" value="' +
-          esc((d.products.skincare || []).map(prodLabel).join('、')) + '"></div>' +
-        '<div class="prow"><b>彩妆</b>' +
-          '<input type="text" id="fMakeupProd" placeholder="顿号分隔" value="' +
-          esc((d.products.makeup || []).map(prodLabel).join('、')) + '"></div>' +
-      '</div>' +
-      pickerHTML(d.products) +
+      pickerHTML(d.products, bare) +
     '</div>';
   }
 
@@ -1541,8 +1532,6 @@
         arr.push(name);
       }
       d.products[kind] = arr;
-      var box = $(kind === 'makeup' ? '#fMakeupProd' : '#fSkincare', host);
-      if (box) box.value = arr.map(prodLabel).join('、');
       renderCompose();   // 重画：选中后要把款式展开出来
     });
   }
@@ -1780,12 +1769,7 @@
     });
     var splitList = function (v) { return v.split(/[,，、]+/).map(function (x) { return x.trim(); }).filter(Boolean); };
     bindPicker(host);
-    $('#fSkincare', host).addEventListener('input', function () {
-      d._touchedProducts = true; d.products.skincare = splitList(this.value).map(toToken);
-    });
-    $('#fMakeupProd', host).addEventListener('input', function () {
-      d._touchedProducts = true; d.products.makeup = splitList(this.value).map(toToken);
-    });
+
 
     var seg = function (sel, key, redraw) {
       var node = $(sel, host);
@@ -3064,36 +3048,6 @@
     var range = box.querySelector('input');
     var val = box.querySelector('.score-val');
     range.addEventListener('input', function () { val.textContent = Number(this.value).toFixed(1); });
-    box.querySelector('#newShot').addEventListener('click', function () {
-      if (!ensureKey()) return;
-      var msg = box.querySelector('#newShotMsg');
-      var inp = $('#prodShotInput');
-      inp.onchange = function () {
-        var files = Array.prototype.slice.call(this.files);
-        this.value = '';
-        if (!files.length) return;
-        msg.textContent = '识别中…';
-        Promise.all(files.map(function (f) {
-          return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
-        })).then(function (blobs) {
-          newShots = blobs;
-          return PrettierAI.identifyProducts(blobs);
-        }).then(function (found) {
-          var x = (found.products || [])[0];
-          if (!x) { msg.textContent = '没认出产品信息，手填也行'; return; }
-          // 只填空着的格子，你已经写过的不动
-          $$('[data-f]', box).forEach(function (inp2) {
-            var v = x[inp2.dataset.f];
-            if (v != null && v !== '' && !inp2.value) inp2.value = v;
-          });
-          var short = box.querySelector('[data-f="short"]');
-          if (short && !short.value) short.value = x.short || ((x.brand || '') + (x.name || ''));
-          msg.textContent = '已填入，检查一下再入库';
-        }).catch(function (e) { msg.textContent = '识别失败：' + (e.message || e); });
-      };
-      inp.click();
-    });
-
     box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
       var score = Number(range.value);
@@ -3362,9 +3316,6 @@
       : '';
 
     var box = el('<div class="prod-detail">' +
-      /* 改名放在详情里：没展开就能点，很容易误触 */
-      '<div class="pd-rename"><button class="more-toggle" type="button" ' +
-        'data-rename="' + esc(p.id) + '">改显示名（' + esc(shortName(p)) + '）</button></div>' +
       (variantList(p).length
         ? '<div class="pd-vars">' + variantList(p).map(function (v) {
             return '<span class="vchip">' + esc(v) + '</span>';
@@ -3381,13 +3332,11 @@
       '</div>' +
       hist + buyHTML +
       /* 照片小节：＋ 挂在标题右边，识别到的信息自动补进产品和购买记录 */
-      '<div class="pd-merge">' +
-        '<button class="more-toggle" data-merge="' + esc(p.id) + '" type="button">' +
-          '并入另一件（当作款式）</button>' +
-        /* 删除放在详情最里面：这是不常做、且做错了很麻烦的动作，
-           不该和「评分」「停用」并排摆在标题行上，太容易误触。 */
-        '<button class="more-toggle danger" data-del="' + esc(p.id) + '" type="button">' +
-          '删除这件产品</button>' +
+      /* 合并和删除都是很少用、且用错了麻烦的动作 ——
+         缩成一行小图标放在最下面就够，不该占一整行文字。 */
+      '<div class="pd-tools">' +
+        '<button data-merge="' + esc(p.id) + '" type="button" aria-label="并入另一件">⇥</button>' +
+        '<button class="danger" data-del="' + esc(p.id) + '" type="button" aria-label="删除">🗑</button>' +
       '</div>' +
       '<div class="pd-hist"><b>照片' +
         '<button class="ph-add" data-shoot="' + esc(p.id) + '" type="button" ' +
@@ -3422,7 +3371,7 @@
       var rn = ev.target.closest('[data-rename]');
       if (rn) return openRenameBox(rn.dataset.rename, rn.closest('.pd-rename'));
       var mg = ev.target.closest('[data-merge]');
-      if (mg) return openMergePicker(mg.dataset.merge, mg.closest('.pd-merge'));
+      if (mg) return openMergePicker(mg.dataset.merge, mg.closest('.pd-tools'));
       var sx = ev.target.closest('[data-shot-del]');
       if (sx) return deleteProductShot(id, Number(sx.dataset.shotDel));
       var sp = ev.target.closest('[data-shot]');
@@ -3681,6 +3630,36 @@
     btn.insertAdjacentElement('afterend', box);
 
     var kind = 'skincare';
+    box.querySelector('#newShot').addEventListener('click', function () {
+      if (!ensureKey()) return;
+      var msg = box.querySelector('#newShotMsg');
+      var inp = $('#prodShotInput');
+      inp.onchange = function () {
+        var files = Array.prototype.slice.call(this.files);
+        this.value = '';
+        if (!files.length) return;
+        msg.textContent = '识别中…';
+        Promise.all(files.map(function (f) {
+          return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+        })).then(function (blobs) {
+          newShots = blobs;
+          return PrettierAI.identifyProducts(blobs);
+        }).then(function (found) {
+          var x = (found.products || [])[0];
+          if (!x) { msg.textContent = '没认出产品信息，手填也行'; return; }
+          // 只填空着的格子，你已经写过的不动
+          $$('[data-f]', box).forEach(function (inp2) {
+            var v = x[inp2.dataset.f];
+            if (v != null && v !== '' && !inp2.value) inp2.value = v;
+          });
+          var short = box.querySelector('[data-f="short"]');
+          if (short && !short.value) short.value = x.short || ((x.brand || '') + (x.name || ''));
+          msg.textContent = '已填入，检查一下再入库';
+        }).catch(function (e) { msg.textContent = '识别失败：' + (e.message || e); });
+      };
+      inp.click();
+    });
+
     box.querySelector('#newKind').addEventListener('click', function (ev) {
       var b = ev.target.closest('button');
       if (!b) return;
@@ -3831,122 +3810,80 @@
     });
   }
 
+  /* 一张一张识别，不整批送。
+     以前是把整批照片一次送给模型，然后把【这一批的全部照片】
+     挂到每一件认出来的产品上 —— 一次传 24 张订单截图，
+     每件产品下面就挂了 24 张，只有一张真跟它有关。
+     一张一张来还有个好处：一张订单截图本来就只对应一件商品，
+     模型不用在多张之间猜谁是谁。 */
   function scanProductsJob(files, step) {
-    var out = $('#scanOut') || document.createElement('div');
-    step('压缩照片');
+    var stamp = Date.now().toString(36);
+    var addedNames = [], patchedNames = [];
 
-    return Promise.all(files.map(function (f) {
-      return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
-    })).then(function (blobs) {
-      step('AI 识别中');
-      return blobs;
-    }).then(function (blobs) {
-      return PrettierAI.identifyProducts(blobs).then(function (found) {
-        return { blobs: blobs, found: found };
-      });
-    }).then(function (r) {
-      var existing = allProducts();
-      var blobsForShots = r.blobs;
-      /* 去重键只用【品名】，不掺品牌。
-         同一件东西的品牌常有多种写法（欧莱雅 / L'OREAL / LOREAL），
-         把品牌算进键里，同一件就会被当成两件；
-         而写成 b || '' + n 更糟 —— 运算符优先级让它变成 b || ('' + n)，
-         有品牌时品名根本没参与比对，于是同品牌的不同产品互相"撞车"。 */
-      var keyOf = function (x) {
-        return String(x.name || '')
-          .replace(/[\s·・\-—_（）()【】\[\]]/g, '')
-          .toLowerCase();
-      };
+    return files.reduce(function (chain, f, idx) {
+      return chain.then(function () {
+        step('第 ' + (idx + 1) + '/' + files.length + ' 张');
+        return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+      }).then(function (blob) {
+        return PrettierAI.identifyProducts([blob]).then(function (found) {
+          var list = (found.products || []);
+          if (!list.length) return null;
 
-      /* 重复上传是常事。已经在库里的不重复添加，
-         但如果这次认出了原来空着的字段（比如之前没认出品牌），就补上去。 */
-      var fresh = [], patched = 0, needShots = [];
-      var merged = existing.slice();
-      (r.found.products || []).forEach(function (x) {
-        var at = merged.findIndex(function (p) { return keyOf(p) === keyOf(x); });
-        if (at < 0) { fresh.push(x); return; }
-        var p = merged[at], add = {};
-        // 只补空缺，不覆盖你已经填过的 —— 你手填的永远优先于 AI 认的
-        ['brand', 'category', 'size', 'price', 'spec', 'note'].forEach(function (f) {
-          if ((p[f] === undefined || p[f] === '') && x[f]) add[f] = x[f];
-        });
-        /* 价格和规格是「这一次买」的信息，不只是产品属性 ——
-           同一件会反复回购，价格和渠道每次都可能不一样。
-           所以除了补字段，还要落一条购买记录。 */
-        var buy = buyFrom(x);
-        if (buy && !hasSameBuy(p.purchases, buy)) {
-          add.purchases = (p.purchases || []).concat([buy]);
-        }
-        if (Object.keys(add).length) {
-          merged[at] = Object.assign({}, p, add);
-          patched++;
-        }
-        needShots.push(at);   // 这次拍的图也挂到已有产品上
-      });
-      var dup = (r.found.products || []).length - fresh.length;
+          var path = 'products/' + stamp + '-' + idx + '.jpg';
+          var existing = allProducts();
+          var keyOf = function (x) {
+            return String(x.short || x.name || '')
+              .replace(/[\s·・\-—_（）()【】\[\]]/g, '').toLowerCase();
+          };
+          var merged = existing.slice();
+          var newOnes = [];
 
-      if (!fresh.length) {
-        out.innerHTML = '<div class="card" style="margin-bottom:18px"><div class="tiny">' +
-          '认出 ' + dup + ' 件，都已在库' +
-          (patched ? '；补全了 ' + patched + ' 件的信息' : '') + '。</div></div>';
-        if (!patched && !needShots.length) return null;
-        needShots.forEach(function (idx) {
-          merged[idx] = Object.assign({}, merged[idx], {
-            photos: (merged[idx].photos || []).concat(shotPaths),
+          list.forEach(function (x) {
+            var at = merged.findIndex(function (p) {
+              return keyOf(p) === keyOf(x) || p.name === x.name;
+            });
+            var buy = buyFrom(x);
+
+            if (at < 0) {
+              var np = {
+                id: 'p' + stamp + idx,
+                name: x.name, short: x.short || '', brand: x.brand || '',
+                kind: x.kind || 'skincare', category: x.category || '',
+                size: x.size || undefined, price: x.price,
+                spec: x.spec || undefined, note: x.note || undefined,
+                status: 'using',
+                purchases: buy ? [buy] : undefined,
+                photos: [path],                 // 只挂自己这一张
+                start: (buy && buy.date) || todayISO(),
+                addedAt: todayISO(),
+              };
+              newOnes.push(np);
+              addedNames.push(x.short || x.name);
+              return;
+            }
+
+            var p = merged[at], add = {};
+            ['brand', 'category', 'size', 'price', 'spec', 'note', 'short'].forEach(function (k) {
+              if ((p[k] === undefined || p[k] === '') && x[k]) add[k] = x[k];
+            });
+            if (buy && !hasSameBuy(p.purchases, buy)) {
+              add.purchases = (p.purchases || []).concat([buy]);
+            }
+            add.photos = (p.photos || []).concat([path]);
+            merged[at] = Object.assign({}, p, add);
+            patchedNames.push(shortName(merged[at]));
           });
-        });
-        return saveProducts(merged, '产品库：补全 ' + patched + ' 件信息', shots);
-      }
 
-      out.innerHTML = '<div class="card" style="margin-bottom:18px">' +
-        '<div class="tiny" style="margin-bottom:8px">新认出 ' + fresh.length + ' 件' +
-        (dup ? '（另有 ' + dup + ' 件已在库）' : '') + '，正在入库…</div>' +
-        fresh.map(function (x) {
-          var extra = [x.size, x.price ? x.price + '元' : ''].filter(Boolean).join(' · ');
-          return '<div class="prow"><b>' +
-            (x.kind === 'makeup' ? '彩妆' : x.kind === 'device' ? '仪器' : '护肤') + '</b>' +
-            '<span>' + esc([x.brand, x.name].filter(Boolean).join(' ')) +
-            (extra ? '　' + esc(extra) : '') + '</span></div>';
-        }).join('') + '</div>';
-
-      var now = new Date().toISOString().slice(0, 10);
-      var stamp = Date.now().toString(36);
-      /* 把识别用的原图一起存下来 —— 万一这次漏了字段（价格、规格），
-         以后还能翻出照片重新认，不用再找实物拍一遍。 */
-      var shots = blobsForShots.map(function (b, i) {
-        return { path: 'products/' + stamp + '-' + i + '.jpg', blob: b };
-      });
-      var shotPaths = shots.map(function (f) { return f.path; });
-
-      var added = fresh.map(function (x, i) {
-        /* ⚠️ 新产品同样要落购买记录。
-           以前只有「已在库」那条分支加，新入库的不加 ——
-           于是价格规格写进了字段，购买记录却一直是空的。 */
-        var buy = buyFrom(x);
-        return {
-          id: 'p' + Date.now().toString(36) + i,
-          name: x.name, brand: x.brand || '', kind: x.kind || 'skincare',
-          category: x.category || '', size: x.size || undefined,
-          price: x.price, spec: x.spec || undefined, note: x.note || undefined,
-          status: 'using',
-          purchases: buy ? [buy] : undefined,
-          photos: shotPaths,            // 识别用的原图，留着以后重认
-          start: (buy && buy.date) || now,
-          addedAt: now,
-        };
-      });
-      needShots.forEach(function (idx) {
-        merged[idx] = Object.assign({}, merged[idx], {
-          photos: (merged[idx].photos || []).concat(shotPaths),
+          return saveProducts(merged.concat(newOnes),
+            '产品库：' + (newOnes.length ? '新增 ' + newOnes.length + ' 件' : '补全信息'),
+            [{ path: path, blob: blob }]);
         });
       });
-      return saveProducts(merged.concat(added),
-        '产品库：新增 ' + added.length + ' 件' + (patched ? '、补全 ' + patched + ' 件' : ''),
-        shots)
-        .then(function () { toast('新增 ' + added.length + ' 件'); });
-    }).catch(function (err) {
-      if (out.innerHTML !== undefined) out.innerHTML = '';
-      throw err;   // 抛给队列，让它显示成失败并能重试
+    }, Promise.resolve()).then(function () {
+      var msg = [];
+      if (addedNames.length) msg.push('新增 ' + addedNames.length + ' 件');
+      if (patchedNames.length) msg.push('补全 ' + patchedNames.length + ' 处');
+      toast(msg.length ? msg.join('，') : '没认出新东西');
     });
   }
 

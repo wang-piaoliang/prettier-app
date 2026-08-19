@@ -1346,3 +1346,15 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
 }
 .appbar .glyphbtn:active { background: var(--card-2); }
 .appbar .glyphbtn.on { background: var(--accent); color: #fff; }
+
+/* 产品详情最下面那排小工具：合并 / 删除 */
+.pd-tools {
+  display: flex; justify-content: flex-end; gap: 4px;
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line);
+}
+.pd-tools button {
+  width: 26px; height: 26px; padding: 0;
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-faint); font-size: 13px; line-height: 1; opacity: .65;
+}
+.pd-tools button.danger { color: var(--focus); }
