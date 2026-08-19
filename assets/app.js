@@ -574,7 +574,11 @@
     var open = !!prodOpen[e.id];
     var parts = [], changedAll = [];
 
-    [{ k: 'skincare', label: '护肤' }, { k: 'makeup', label: '彩妆' }].forEach(function (g) {
+    // 素颜没上妆，就别列彩妆 —— 那多半是沿用上一条带进来的
+    var groups = e.face === 'bare'
+      ? [{ k: 'skincare', label: '护肤' }]
+      : [{ k: 'skincare', label: '护肤' }, { k: 'makeup', label: '彩妆' }];
+    groups.forEach(function (g) {
       var list = p[g.k] || [];
       if (!list.length) return;
       var prev = (prevUsed(e, g.k) || []).map(prodKey);
@@ -2368,7 +2372,10 @@
       id: id, date: d.date, at: d.at, slot: d.slot, face: d.face, kind: d.kind,
       light: d.light, scores: d.scores, tags: d.tags, note: d.note,
       photos: paths,
-      products: d.products,
+      // 素颜不记彩妆 —— 沿用上一条时会顺手带进来，存下去就成了错的
+      products: d.face === 'bare'
+        ? { skincare: (d.products.skincare || []).slice(), makeup: [] }
+        : d.products,
     };
     if ((d.makeupScores && Object.keys(d.makeupScores).length) ||
         (d.makeupState && d.makeupState.length)) {
