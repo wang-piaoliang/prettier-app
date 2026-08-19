@@ -424,8 +424,7 @@
            那是它的观察笔记，不是你的记录。数据还在，需要时另说。 */
         ((prod || e.note)
           ? '<div class="entry-detail" id="dt-' + esc(e.id) + '">' +
-              prod +
-              (e.note ? '<div class="note">' + esc(e.note) + '</div>' : '') +
+              prod + noteHTML(e) +
             '</div>'
           : '')
       )) + '</article>';
@@ -437,6 +436,7 @@
   /* 每条记录单独折叠。整天折叠用 collapsedDays，这个是「这一组照片」。 */
   var entryFold = {};
   var prodOpen = {};
+  var noteOpen = {};
 
   function bodyWrap(inner) {
     return inner && inner.trim()
@@ -464,6 +464,22 @@
 
   /* 默认折叠：天天基本一样，全列出来是噪音。
      真正有信息量的是【和上次不一样的那几件】—— 标红，收起时也看得见。 */
+
+  /* 备注默认折叠，和「用的产品」一套。
+     收起时给一行摘要，知道里面有东西、值不值得点开。 */
+  function noteHTML(e) {
+    if (!e.note) return '';
+    var open = !!noteOpen[e.id];
+    var oneLine = String(e.note).replace(/\s+/g, ' ').trim();
+    return '<div class="note-fold' + (open ? ' open' : '') + '">' +
+      '<button class="prod-fold" type="button" data-note-open="' + esc(e.id) + '">' +
+        '<b>备注</b><span class="pf-sum">' + esc(open ? '' : oneLine) + '</span>' +
+        '<span class="ml-caret">▾</span>' +
+      '</button>' +
+      (open ? '<div class="note">' + esc(e.note) + '</div>' : '') +
+    '</div>';
+  }
+
   function productsHTML(e) {
     var p = e.products;
     if (!p) return '';
@@ -661,6 +677,14 @@
       if (cp) return toggleCompare(cp.dataset.cmp);
       if (ev.target.closest('#cmpGo')) return renderCompare();
       if (ev.target.closest('#cmpClear')) { cmpSel = []; selectMode = false; syncTopBtn(); return redrawTimeline(); }
+
+      var no = ev.target.closest('[data-note-open]');
+      if (no) {
+        var nid = no.dataset.noteOpen;
+        noteOpen[nid] = !noteOpen[nid];
+        redrawTimeline();
+        return;
+      }
 
       var po = ev.target.closest('[data-prod-open]');
       if (po) {
@@ -3469,10 +3493,23 @@
     if (!from || !to || fromId === toId) return;
 
     var label = shortName(from);
+    /* 款式名要归一化：一个名字包含另一个就算同一个款式，留短的。
+       不然「积雪草」和「积雪草面膜舒缓修护贴」会并排列出来，
+       其实是同一款。 */
+    var addV = function (list, v) {
+      v = String(v || '').trim();
+      if (!v) return list;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].indexOf(v) >= 0) { list[i] = v; return list; }   // 新的更短，换掉
+        if (v.indexOf(list[i]) >= 0) return list;                     // 已有更短的，不加
+      }
+      list.push(v);
+      return list;
+    };
     var vs = variantList(to).slice();
-    variantList(from).forEach(function (v) { if (vs.indexOf(v) < 0) vs.push(v); });
+    variantList(from).forEach(function (v) { addV(vs, v); });
     // 被并进来的那件，它的显示名本身就是一个款式
-    if (vs.indexOf(label) < 0 && label !== shortName(to)) vs.push(label);
+    if (label !== shortName(to)) addV(vs, label);
 
     var buys = (to.purchases || []).concat(
       (from.purchases || []).map(function (b) {

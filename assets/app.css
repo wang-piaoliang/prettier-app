@@ -1369,3 +1369,9 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
 
 /* ⌄ 这个字符本身重心就偏下，和 ↻ ◔ ◎ 摆一起会低半格，单独补偿 */
 #foldAllBtn { line-height: 1; padding-bottom: 5px; }
+
+/* 备注折叠 */
+.note-fold { margin-top: 10px; }
+.note-fold .note { margin-top: 6px; padding-top: 8px; }
+.note-fold.open .prod-fold .ml-caret { transform: rotate(0); }
+.note-fold:not(.open) .prod-fold .ml-caret { transform: rotate(-90deg); }
