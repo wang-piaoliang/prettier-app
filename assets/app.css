@@ -286,6 +286,7 @@ main {
 .zone-text { color: var(--ink-soft); font-size: 14px; line-height: 1.8; }
 
 .note {
+  white-space: pre-wrap;   /* 你敲的换行要留着 */
   margin-top: 14px;
   padding-top: 11px;
   border-top: 1px dashed var(--line);
@@ -1319,3 +1320,29 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
   background: var(--accent-bg); border-color: var(--accent);
   color: var(--accent-ink);
 }
+
+.cr-note, .day-note, .zone-text, .prow span { white-space: pre-wrap; }
+
+/* 长按拖动时别把文字选起来 */
+.prod-card, .picker .slot, .day-head { -webkit-user-select: none; user-select: none; }
+.prod-card input, .prod-card textarea { -webkit-user-select: text; user-select: text; }
+
+/* 护肤记录：打分条 */
+.c-rate { margin: 0; }
+.c-rate .stars button.half { opacity: .55; }
+.c-num {
+  font-family: var(--sans); font-size: 12px; color: var(--ink-faint); margin-left: 8px;
+}
+.more-toggle.danger { color: var(--focus); }
+.pd-rename { margin-top: 6px; }
+
+/* 标题栏：左边是应用名，右边一排同样大小的圆形图标 */
+.appbar h1 { font-size: 18px; letter-spacing: 4px; }
+.appbar .glyphbtn {
+  width: 34px; height: 34px; margin-left: 2px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: none; border-radius: 999px;
+  color: var(--ink-soft); font-size: 16px; line-height: 1;
+}
+.appbar .glyphbtn:active { background: var(--card-2); }
+.appbar .glyphbtn.on { background: var(--accent); color: #fff; }

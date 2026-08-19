@@ -446,13 +446,15 @@
 
   /* 上一次记了这类产品的那条记录。
      彩妆只跟带妆的比 —— 和素颜那条比没有意义。 */
+  /* 和【前一天】比，不和今天早些时候比。
+     同一天里补妆、再拍一张，用的当然是同一套产品 ——
+     跟今天的上一次比，永远比不出东西来。
+     真正有意义的是「今天和昨天换了什么」。 */
   function prevUsed(e, kind) {
     var all = newestFirst((state.data && state.data.entries) || []);
-    var seen = false;
     for (var i = 0; i < all.length; i++) {
       var x = all[i];
-      if (x.id === e.id) { seen = true; continue; }
-      if (!seen) continue;                       // 只往前找，不看之后的
+      if (!x.date || !e.date || x.date >= e.date) continue;   // 只看更早的【某一天】
       if (kind === 'makeup' && x.face !== 'makeup') continue;
       var list = x.products && x.products[kind];
       if (list && list.length) return list;
@@ -1125,38 +1127,59 @@
     if (cur) kind = cur.pid ? 'mask' : 'event';
 
     var masks = maskProducts();
-    var opts = masks.map(function (p) {
-      return '<option value="' + esc(p.id) + '"' +
-        (cur && cur.pid === p.id ? ' selected' : '') + '>' + esc(shortName(p)) + '</option>';
-    }).join('');
+    var sel = { pid: cur && cur.pid ? cur.pid : (masks[0] ? masks[0].id : ''),
+                variant: (cur && cur.variant) || '',
+                score: cur && cur.score != null ? cur.score : null };
 
-    // 选了有款式的产品，再选是哪一款
-    var variantSel = '';
-    var chosen = cur && cur.pid ? prodById(cur.pid) : masks[0];
-    if (chosen && variantList(chosen).length) {
-      variantSel = '<select id="c-variant" style="margin-top:8px">' +
-        '<option value="">款式（可不选）</option>' +
-        variantList(chosen).map(function (v) {
-          return '<option value="' + esc(v) + '"' +
-            (cur && cur.variant === v ? ' selected' : '') + '>' + esc(v) + '</option>';
-        }).join('') + '</select>';
-    }
+    /* 点选，不用下拉 —— 和记皮肤那边一套交互。
+       下拉在手机上要点两次、还遮住半屏，选个面膜不该这么费劲。 */
+    var chipsHTML = function () {
+      var p = prodById(sel.pid);
+      var vs = p ? variantList(p) : [];
+      return '<div class="pick" id="c-pick">' +
+        masks.map(function (m) {
+          return '<button type="button" class="pchip' + (m.id === sel.pid ? ' on' : '') +
+            '" data-cpid="' + esc(m.id) + '">' + esc(shortName(m)) + '</button>';
+        }).join('') + '</div>' +
+        (vs.length
+          ? '<div class="pick" id="c-vpick" style="margin-top:6px">' +
+            vs.map(function (v) {
+              return '<button type="button" class="pchip vsub' +
+                (v === sel.variant ? ' on' : '') + '" data-cvar="' + esc(v) + '">' +
+                esc(v) + '</button>';
+            }).join('') + '</div>'
+          : '');
+    };
+
+    // 打分条：和记皮肤那边同一个控件，半颗＝0.5，长按可微调
+    var scoreHTML = function () {
+      var v = sel.score;
+      var dots = '';
+      for (var i = 1; i <= 5; i++) {
+        dots += '<button type="button" data-cs="' + i + '" class="' +
+          (v >= i ? 'on' : (v >= i - 0.5 ? 'half' : '')) + '">●</button>';
+      }
+      return '<div class="rate c-rate">' +
+        '<span class="name">评分</span>' +
+        '<span class="stars">' + dots + '</span>' +
+        '<span class="c-num">' + (v == null ? '未打分' : v.toFixed(1)) + '</span>' +
+        (v != null ? '<button class="clear" type="button" data-cs-clear="1">清除</button>' : '') +
+      '</div>';
+    };
 
     var box = el(
       '<div class="inline-edit" id="c-edit">' +
         (kind === 'mask'
           ? (masks.length
-              ? '<select id="c-pid">' + opts + '</select>' + variantSel
+              ? '<div id="c-chips">' + chipsHTML() + '</div>'
               : '<div class="tiny">产品库里还没有面膜/眼膜/唇膜</div>')
           : '<input type="text" id="c-what" placeholder="吃了 / 做了什么，例：吃烤肉、熬夜、做了光子"' +
             (cur && cur.what ? ' value="' + esc(cur.what) + '"' : '') + '>') +
         '<div class="w-form" style="margin-top:8px">' +
           '<input type="date" id="c-date" value="' +
             (cur ? (cur.at || '').slice(0, 10) : todayISO()) + '">' +
-          '<input type="number" id="c-score" step="0.1" min="0" max="5" inputmode="decimal" ' +
-            'placeholder="评分 0-5（可留空）"' +
-            (cur && cur.score != null ? ' value="' + cur.score + '"' : '') + '>' +
         '</div>' +
+        '<div id="c-scorebox" style="margin-top:8px">' + scoreHTML() + '</div>' +
         '<input type="text" id="c-note" placeholder="备注：什么感觉、之后皮肤怎么样" style="margin-top:8px"' +
           (cur && cur.note ? ' value="' + esc(cur.note) + '"' : '') + '>' +
         '<div class="ie-act">' +
@@ -1167,33 +1190,36 @@
     );
     anchor.replaceWith(box);
 
-    // 换产品要换款式列表
-    var pidSel = box.querySelector('#c-pid');
-    if (pidSel) {
-      pidSel.addEventListener('change', function () {
-        var p = prodById(this.value);
-        var vs = p ? variantList(p) : [];
-        var old = box.querySelector('#c-variant');
-        if (old) old.remove();
-        if (!vs.length) return;
-        var sel = el('<select id="c-variant" style="margin-top:8px">' +
-          '<option value="">款式（可不选）</option>' +
-          vs.map(function (v) { return '<option>' + esc(v) + '</option>'; }).join('') +
-          '</select>');
-        pidSel.insertAdjacentElement('afterend', sel);
+    var chipHost = box.querySelector('#c-chips');
+    if (chipHost) {
+      chipHost.addEventListener('click', function (ev) {
+        var pb = ev.target.closest('[data-cpid]');
+        if (pb) { sel.pid = pb.dataset.cpid; sel.variant = ''; chipHost.innerHTML = chipsHTML(); return; }
+        var vb = ev.target.closest('[data-cvar]');
+        if (vb) {
+          sel.variant = (sel.variant === vb.dataset.cvar) ? '' : vb.dataset.cvar;
+          chipHost.innerHTML = chipsHTML();
+        }
       });
     }
+
+    var scoreHost = box.querySelector('#c-scorebox');
+    scoreHost.addEventListener('click', function (ev) {
+      if (ev.target.closest('[data-cs-clear]')) { sel.score = null; scoreHost.innerHTML = scoreHTML(); return; }
+      var sb = ev.target.closest('[data-cs]');
+      if (!sb) return;
+      var n = Number(sb.dataset.cs);
+      // 再点同一颗＝减半颗，这样 3.5、4.5 也点得出来
+      sel.score = (sel.score === n) ? n - 0.5 : n;
+      scoreHost.innerHTML = scoreHTML();
+    });
 
     box.querySelector('.ie-cancel').addEventListener('click', function () {
       box.remove();
       go('mainlines');
     });
     box.querySelector('.ie-ok').addEventListener('click', function () {
-      var scoreRaw = box.querySelector('#c-score').value.trim();
-      var score = scoreRaw === '' ? null : Number(scoreRaw);
-      if (score != null && (isNaN(score) || score < 0 || score > 5)) {
-        return toast('评分填 0 到 5', true);
-      }
+      var score = sel.score;
       var date = box.querySelector('#c-date').value || todayISO();
       var rec = {
         id: cur ? cur.id : 'c' + Date.now().toString(36),
@@ -1204,11 +1230,9 @@
       if (score != null) rec.score = Math.round(score * 10) / 10;
 
       if (kind === 'mask') {
-        var sel = box.querySelector('#c-pid');
-        if (!sel || !sel.value) return toast('先选一个产品', true);
-        rec.pid = sel.value;
-        var vs = box.querySelector('#c-variant');
-        if (vs && vs.value) rec.variant = vs.value;
+        if (!sel.pid) return toast('先选一个产品', true);
+        rec.pid = sel.pid;
+        if (sel.variant) rec.variant = sel.variant;
       } else {
         var what = box.querySelector('#c-what').value.trim();
         if (!what) return toast('写一下做了什么', true);
@@ -1743,7 +1767,14 @@
     $('#fDate', host).addEventListener('change', syncAt);
     $('#fTime', host).addEventListener('change', syncAt);
     $('#fLight', host).addEventListener('input', function () { d.light = this.value; });
-    $('#fNote', host).addEventListener('input', function () { d.note = this.value; });
+    var noteBox = $('#fNote', host);
+    /* 按内容自动长高：写长了看不见前面写过什么，很难接着写。 */
+    var grow = function (t) {
+      t.style.height = 'auto';
+      t.style.height = Math.min(t.scrollHeight + 2, 460) + 'px';
+    };
+    grow(noteBox);
+    noteBox.addEventListener('input', function () { d.note = this.value; grow(this); });
     $('#fTags', host).addEventListener('input', function () {
       d.tags = this.value.split(/[\s,，、]+/).filter(Boolean);
     });
@@ -1775,6 +1806,21 @@
       if (!b) return;
       d.light = b.dataset.v;
       $('#fLight', host).value = d.light;
+    });
+
+    /* 草稿里的照片也要能点开看 —— 传之前就该确认拍清楚没有。
+       用的是已经在内存里的 blob，不走仓库。 */
+    $('#picker', host).addEventListener('click', function (ev) {
+      if (ev.target.closest('.slot-del') || ev.target.closest('button:not(.slot)')) return;
+      var slot = ev.target.closest('.slot');
+      if (!slot) return;
+      var d = state.draft;
+      var urls = (d.keepPhotos || []).map(function (p) { return null; });
+      var imgs = Array.prototype.slice.call(host.querySelectorAll('.slot img'))
+        .map(function (im) { return im.src; }).filter(Boolean);
+      if (!imgs.length) return;
+      var all = Array.prototype.slice.call(host.querySelectorAll('.slot'));
+      openBlobList(imgs, Math.max(0, all.indexOf(slot)));
     });
 
     $('#aiBtn', host).addEventListener('click', runAI);
@@ -1848,11 +1894,11 @@
     // 长按拖拽排序，不放左右箭头按钮 —— 那些按钮又小又丑，
     // 而且在手机上跟点击删除很容易误触
     var cells = keep.map(function (p, i) {
-      return '<div class="slot" data-drag="k' + i + '">' +
+      return '<div class="slot" data-drag="k' + i + '" data-peekk="' + i + '">' +
         '<img data-key="' + esc(p) + '" alt="" draggable="false">' +
         '<button class="del" data-kdel="' + i + '" aria-label="删除">×</button></div>';
     }).concat(d.photos.map(function (p, i) {
-      return '<div class="slot new" data-drag="n' + i + '">' +
+      return '<div class="slot new" data-drag="n' + i + '" data-peekn="' + i + '">' +
         '<img src="' + p.preview + '" alt="" draggable="false">' +
         '<button class="del" data-i="' + i + '" aria-label="删除">×</button>' +
         '<span class="badge">新</span></div>';
@@ -2294,8 +2340,8 @@
     var b = $('#settingsBtn');
     if (!b) return;
     var pick = state.view === 'timeline';
-    b.textContent = pick ? (selectMode ? '完成' : '选择') : '◎';
-    b.className = pick ? 'iconbtn' + (selectMode ? ' on' : '') : 'glyphbtn';
+    b.textContent = pick ? (selectMode ? '✓' : '⧉') : '◎';
+    b.className = 'glyphbtn' + (pick && selectMode ? ' on' : '');
     b.setAttribute('aria-label', pick ? (selectMode ? '退出选择' : '选择对比') : '设置');
   }
 
@@ -2830,8 +2876,6 @@
         }
         var rv = ev.target.closest('[data-review]');
         if (rv) return openReviewEditor(rv.dataset.review, rv.closest('.prod-card'));
-        var rn = ev.target.closest('[data-rename]');
-        if (rn) return openRenameBox(rn.dataset.rename, rn.closest('.prod-card'));
         var dp = ev.target.closest('[data-detail-prod]');
         if (dp) return toggleProdDetail(dp.dataset.detailProd, dp.closest('.prod-card'));
         var ex = ev.target.closest('[data-expand]');
@@ -2971,8 +3015,7 @@
 
     return '<div class="prod-card" data-pid="' + esc(p.id) + '">' +
       '<div class="pc-main" data-detail-prod="' + esc(p.id) + '">' +
-        '<div class="nm" data-rename="' + esc(p.id) + '">' + esc(disp) +
-          '<i class="nm-pen">✎</i></div>' +
+        '<div class="nm">' + esc(disp) + '</div>' +
         (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') +
         (dates.length ? '<div class="sub">' + esc(dates.join(' · ')) + '</div>' : '') +
       '</div>' +
@@ -2981,7 +3024,6 @@
         '<button data-review="' + esc(p.id) + '">评分</button>' +
         '<button data-toggle="' + esc(p.id) + '">' +
           (p.status === 'retired' ? '恢复' : '停用') + '</button>' +
-        '<button data-del="' + esc(p.id) + '">删</button>' +
       '</div>' +
       (rs.length
         ? '<div class="prod-reviews" id="rv-' + esc(p.id) + '" hidden>' +
@@ -3022,6 +3064,36 @@
     var range = box.querySelector('input');
     var val = box.querySelector('.score-val');
     range.addEventListener('input', function () { val.textContent = Number(this.value).toFixed(1); });
+    box.querySelector('#newShot').addEventListener('click', function () {
+      if (!ensureKey()) return;
+      var msg = box.querySelector('#newShotMsg');
+      var inp = $('#prodShotInput');
+      inp.onchange = function () {
+        var files = Array.prototype.slice.call(this.files);
+        this.value = '';
+        if (!files.length) return;
+        msg.textContent = '识别中…';
+        Promise.all(files.map(function (f) {
+          return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+        })).then(function (blobs) {
+          newShots = blobs;
+          return PrettierAI.identifyProducts(blobs);
+        }).then(function (found) {
+          var x = (found.products || [])[0];
+          if (!x) { msg.textContent = '没认出产品信息，手填也行'; return; }
+          // 只填空着的格子，你已经写过的不动
+          $$('[data-f]', box).forEach(function (inp2) {
+            var v = x[inp2.dataset.f];
+            if (v != null && v !== '' && !inp2.value) inp2.value = v;
+          });
+          var short = box.querySelector('[data-f="short"]');
+          if (short && !short.value) short.value = x.short || ((x.brand || '') + (x.name || ''));
+          msg.textContent = '已填入，检查一下再入库';
+        }).catch(function (e) { msg.textContent = '识别失败：' + (e.message || e); });
+      };
+      inp.click();
+    });
+
     box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
       var score = Number(range.value);
@@ -3290,6 +3362,9 @@
       : '';
 
     var box = el('<div class="prod-detail">' +
+      /* 改名放在详情里：没展开就能点，很容易误触 */
+      '<div class="pd-rename"><button class="more-toggle" type="button" ' +
+        'data-rename="' + esc(p.id) + '">改显示名（' + esc(shortName(p)) + '）</button></div>' +
       (variantList(p).length
         ? '<div class="pd-vars">' + variantList(p).map(function (v) {
             return '<span class="vchip">' + esc(v) + '</span>';
@@ -3309,6 +3384,10 @@
       '<div class="pd-merge">' +
         '<button class="more-toggle" data-merge="' + esc(p.id) + '" type="button">' +
           '并入另一件（当作款式）</button>' +
+        /* 删除放在详情最里面：这是不常做、且做错了很麻烦的动作，
+           不该和「评分」「停用」并排摆在标题行上，太容易误触。 */
+        '<button class="more-toggle danger" data-del="' + esc(p.id) + '" type="button">' +
+          '删除这件产品</button>' +
       '</div>' +
       '<div class="pd-hist"><b>照片' +
         '<button class="ph-add" data-shoot="' + esc(p.id) + '" type="button" ' +
@@ -3340,6 +3419,8 @@
       if (ba) return openBuyEditor(id, ba);
       var bd = ev.target.closest('[data-buy-del]');
       if (bd) return deleteBuy(id, Number(bd.dataset.buyDel));
+      var rn = ev.target.closest('[data-rename]');
+      if (rn) return openRenameBox(rn.dataset.rename, rn.closest('.pd-rename'));
       var mg = ev.target.closest('[data-merge]');
       if (mg) return openMergePicker(mg.dataset.merge, mg.closest('.pd-merge'));
       var sx = ev.target.closest('[data-shot-del]');
@@ -3568,7 +3649,10 @@
   /* 手动加一件：就地展开完整表单，字段和产品详情的编辑态完全一致。
      以前是连着四个 prompt() 弹窗、且只能填名字和品牌 ——
      App 里其它地方都是页内编辑，只有这里弹窗，交互不一致。 */
+  var newShots = null;
+
   function addProductManually(btn) {
+    newShots = null;
     if (btn.nextElementSibling && btn.nextElementSibling.classList.contains('inline-edit')) {
       return btn.nextElementSibling.remove();
     }
@@ -3586,7 +3670,10 @@
           return '<button type="button" data-v="' + k.key + '"' +
             (i === 1 ? ' class="on"' : '') + '>' + esc(k.label) + '</button>';
         }).join('') +
-      '</div>' + rows +
+      '</div>' +
+      /* 手动添加也能配照片：拍一张，认出来的信息直接填进下面的空格 */
+      '<button class="more-toggle" type="button" id="newShot">＋ 拍张照自动填</button>' +
+      '<span class="tiny" id="newShotMsg"></span>' + rows +
       '<div class="ie-act">' +
         '<button class="ie-cancel" type="button">取消</button>' +
         '<button class="ie-ok" type="button">入库</button>' +
@@ -3616,7 +3703,19 @@
 
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       box.remove();
-      saveProducts(allProducts().concat([p]), '产品库：添加 ' + p.name)
+
+      // 刚才拍的照片一起存进去
+      var files = null;
+      if (newShots && newShots.length) {
+        var stamp = Date.now().toString(36);
+        files = newShots.map(function (b, i) {
+          return { path: 'products/' + p.id + '-' + stamp + '-' + i + '.jpg', blob: b };
+        });
+        p.photos = files.map(function (f) { return f.path; });
+        newShots = null;
+      }
+
+      saveProducts(allProducts().concat([p]), '产品库：添加 ' + p.name, files)
         .then(function () { toast('已入库'); refresh('products'); })
         .catch(function (e) { toast('失败：' + e.message, true); });
     });
@@ -3902,6 +4001,16 @@
     resetZoom();
   }
 
+
+  /* 直接用现成的图片地址开灯箱（草稿里的照片还没进仓库，没有 path）。 */
+  function openBlobList(urls, startIdx) {
+    if (!urls || !urls.length) return;
+    lb.keys = urls.map(function (u) { return { url: u }; });
+    lb.i = Math.max(0, Math.min(startIdx || 0, urls.length - 1));
+    openLb();
+    renderLightbox();
+  }
+
   function renderLightbox() {
     var box = $('#lightbox');
     var img = $('#lbImg');
@@ -3911,7 +4020,14 @@
     $('#lbPrev').hidden = $('#lbNext').hidden = lb.keys.length < 2;
 
     img.style.opacity = '.25';
-    photoURL(lb.keys[lb.i]).then(function (u) {
+    var cur = lb.keys[lb.i];
+    // 草稿里的照片直接给地址，不用去仓库找
+    if (cur && cur.url) {
+      img.src = cur.url;
+      img.style.opacity = '1';
+      return;
+    }
+    photoURL(cur).then(function (u) {
       img.src = u;
       img.style.opacity = '1';
     }).catch(function () { img.style.opacity = '1'; });
