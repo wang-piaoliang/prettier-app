@@ -2799,6 +2799,8 @@
         }
         var rv = ev.target.closest('[data-review]');
         if (rv) return openReviewEditor(rv.dataset.review, rv.closest('.prod-card'));
+        var rn = ev.target.closest('[data-rename]');
+        if (rn) return openRenameBox(rn.dataset.rename, rn.closest('.prod-card'));
         var dp = ev.target.closest('[data-detail-prod]');
         if (dp) return toggleProdDetail(dp.dataset.detailProd, dp.closest('.prod-card'));
         var ex = ev.target.closest('[data-expand]');
@@ -2915,7 +2917,8 @@
 
     return '<div class="prod-card" data-pid="' + esc(p.id) + '">' +
       '<div class="pc-main" data-detail-prod="' + esc(p.id) + '">' +
-        '<div class="nm">' + esc(disp) + '</div>' +
+        '<div class="nm" data-rename="' + esc(p.id) + '">' + esc(disp) +
+          '<i class="nm-pen">✎</i></div>' +
         (sub ? '<div class="sub">' + esc(sub) + '</div>' : '') +
         (dates.length ? '<div class="sub">' + esc(dates.join(' · ')) + '</div>' : '') +
       '</div>' +
@@ -3249,6 +3252,10 @@
       '</div>' +
       hist + buyHTML +
       /* 照片小节：＋ 挂在标题右边，识别到的信息自动补进产品和购买记录 */
+      '<div class="pd-merge">' +
+        '<button class="more-toggle" data-merge="' + esc(p.id) + '" type="button">' +
+          '并入另一件（当作款式）</button>' +
+      '</div>' +
       '<div class="pd-hist"><b>照片' +
         '<button class="ph-add" data-shoot="' + esc(p.id) + '" type="button" ' +
           'aria-label="拍张照补充信息">＋</button></b>' +
@@ -3279,6 +3286,8 @@
       if (ba) return openBuyEditor(id, ba);
       var bd = ev.target.closest('[data-buy-del]');
       if (bd) return deleteBuy(id, Number(bd.dataset.buyDel));
+      var mg = ev.target.closest('[data-merge]');
+      if (mg) return openMergePicker(mg.dataset.merge, mg.closest('.pd-merge'));
       var sx = ev.target.closest('[data-shot-del]');
       if (sx) return deleteProductShot(id, Number(sx.dataset.shotDel));
       var sp = ev.target.closest('[data-shot]');
@@ -3331,9 +3340,17 @@
   }
 
   function saveProducts(list, message, extraFiles) {
-    var conf = Object.assign({}, state.data);
-    delete conf.entries;
-    conf.products = list;
+    /* ⚠️ 不能整份覆盖 base.products = list。
+       list 来自这台设备内存里的副本；只要它比云端旧，
+       一次保存就把云端的改动整个抹掉 ——
+       手机上改个评分，就能把别处刚做的合并复原成合并前的样子。
+       所以按 id 做差异：本地改过的用本地的，本地没碰过的保留云端的，
+       本地明确删掉的才删。 */
+    var before = allProducts();
+    var kept = {};
+    list.forEach(function (p) { kept[p.id] = p; });
+    var removed = before.filter(function (b) { return !kept[b.id]; })
+      .map(function (b) { return b.id; });
 
     // 先本地生效，界面立刻更新；提交在后面慢慢走
     if (state.data) state.data.products = list;
@@ -3347,10 +3364,128 @@
     return pre.then(function () {
       return GitStore.updateJSON('settings.json', function (remote) {
         var base = remote || {};
-        base.products = list;
+        var rp = base.products || [];
+        var seen = {};
+        var out = rp.filter(function (p) { return removed.indexOf(p.id) < 0; })
+          .map(function (p) { seen[p.id] = 1; return kept[p.id] || p; });
+        list.forEach(function (p) { if (!seen[p.id]) out.push(p); });
+        base.products = out;
         return base;
       }, message);
     }).then(loadData).then(function () { refresh('products'); });
+  }
+
+  /* 把一件产品并进另一件：购买记录、照片、评价、款式全部并过去。
+     同一件东西的不同款式/色号本来就该是一条 —— 敷尔佳那 8 个面膜、
+     眉笔的几个色号，分开列既占地方，也看不出「这东西我一共买过几次」。 */
+  function mergeProductInto(fromId, toId) {
+    var all = allProducts();
+    var from = all.filter(function (x) { return x.id === fromId; })[0];
+    var to = all.filter(function (x) { return x.id === toId; })[0];
+    if (!from || !to || fromId === toId) return;
+
+    var label = shortName(from);
+    var vs = variantList(to).slice();
+    variantList(from).forEach(function (v) { if (vs.indexOf(v) < 0) vs.push(v); });
+    // 被并进来的那件，它的显示名本身就是一个款式
+    if (vs.indexOf(label) < 0 && label !== shortName(to)) vs.push(label);
+
+    var buys = (to.purchases || []).concat(
+      (from.purchases || []).map(function (b) {
+        return b.spec ? b : Object.assign({}, b, { spec: label });
+      })
+    ).sort(function (x, y) { return (x.date || '') < (y.date || '') ? 1 : -1; });
+
+    var merged = Object.assign({}, to, {
+      variants: vs,
+      purchases: buys,
+      photos: (to.photos || []).concat(
+        (from.photos || []).filter(function (p) { return (to.photos || []).indexOf(p) < 0; })),
+      reviews: (to.reviews || []).concat(from.reviews || []),
+      start: [to.start, from.start].filter(Boolean).sort()[0] || to.start,
+    });
+
+    var next = all.filter(function (x) { return x.id !== fromId; })
+      .map(function (x) { return x.id === toId ? merged : x; });
+
+    saveProducts(next, '产品库：把「' + label + '」并进「' + shortName(to) + '」')
+      .then(function () {
+        // 历史记录里引用的是被并掉那件，改指到合并后那件
+        return renameInEntries(fromId, toId);
+      })
+      .then(function () { toast('已并入' + shortName(to)); })
+      .catch(function (e) { toast('合并失败：' + (e.message || e), true); });
+  }
+
+
+  /* 点产品第一行的名字就能改。
+     这是【到处引用的那个名字】：时间线、记一条、对比都取它。
+     藏在「展开详情 → ✎ → 表单」后面太深了，用户反复说找不到。 */
+  function openRenameBox(pid, card) {
+    if (card.querySelector('.rn-box')) return;
+    var p = allProducts().filter(function (x) { return x.id === pid; })[0];
+    if (!p) return;
+    var box = el(
+      '<div class="inline-edit rn-box">' +
+        '<div class="tiny" style="margin-bottom:6px">显示名（时间线、记一条都用这个）</div>' +
+        '<input type="text" id="rn-v" value="' + esc(shortName(p)) + '">' +
+        '<div class="tiny hint" style="margin-top:6px">全名「' + esc(p.name) + '」不会动</div>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">保存</button>' +
+        '</div>' +
+      '</div>'
+    );
+    card.appendChild(box);
+    var input = box.querySelector('#rn-v');
+    input.focus();
+    input.select();
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var v = input.value.trim();
+      if (!v) return toast('名字不能空', true);
+      var oldName = shortName(p);
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      box.remove();
+      if (v === oldName) return;
+      var next = allProducts().map(function (x) {
+        return x.id === pid ? Object.assign({}, x, { short: v }) : x;
+      });
+      saveProducts(next, '产品库：改显示名 ' + oldName + ' → ' + v)
+        .then(function () { toast('已改成「' + v + '」'); })
+        .catch(function (e) { toast('失败：' + (e.message || e), true); });
+    });
+  }
+
+  function openMergePicker(fromId, anchor) {
+    if (document.getElementById('mg-box')) return;
+    var from = allProducts().filter(function (x) { return x.id === fromId; })[0];
+    if (!from) return;
+    var same = allProducts().filter(function (p) {
+      return p.id !== fromId && kindOf(p) === kindOf(from);
+    });
+    if (!same.length) return toast('没有可以并入的产品', true);
+
+    var box = el(
+      '<div class="inline-edit" id="mg-box">' +
+        '<div class="tiny" style="margin-bottom:8px">把「' + esc(shortName(from)) +
+          '」并进哪一件？它会变成对方的一个款式。</div>' +
+        '<select id="mg-to">' + same.map(function (p) {
+          return '<option value="' + esc(p.id) + '">' + esc(shortName(p)) + '</option>';
+        }).join('') + '</select>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">合并</button>' +
+        '</div>' +
+      '</div>'
+    );
+    anchor.appendChild(box);
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var to = box.querySelector('#mg-to').value;
+      box.remove();
+      mergeProductInto(fromId, to);
+    });
   }
 
   function removeProduct(id) {

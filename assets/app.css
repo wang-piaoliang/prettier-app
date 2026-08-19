@@ -1285,3 +1285,22 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
   border: 1px solid var(--line); background: var(--card);
   font-family: var(--sans); font-size: 16px;
 }
+
+/* 点名字直接改显示名 */
+.prod-card .nm { cursor: pointer; }
+.nm-pen {
+  font-style: normal; margin-left: 6px;
+  color: var(--ink-faint); font-size: 11px; opacity: .55;
+}
+.rn-box { margin-top: 8px; }
+.rn-box input {
+  width: 100%; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card);
+  font-family: var(--sans); font-size: 16px;
+}
+.pd-merge { margin-top: 6px; }
+#mg-box select {
+  width: 100%; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card);
+  font-family: var(--sans); font-size: 16px;
+}
