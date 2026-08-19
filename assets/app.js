@@ -627,13 +627,8 @@
 
   /* 折叠、选中这类操作会整页重画，浏览器把滚动位置归零，
      人就被弹到列表顶上去了。重画前后把滚动位置接回来。 */
-  function redrawTimeline() {
-    var y = window.scrollY;
-    go('timeline');
-    // 重画是同步的，但图片是异步填的；下一帧再定位一次更稳
-    window.scrollTo(0, y);
-    requestAnimationFrame(function () { window.scrollTo(0, y); });
-  }
+  // go() 现在自己会保持滚动位置，这里只是个名字更明确的入口
+  function redrawTimeline() { go('timeline'); }
 
   function bindTimeline(host) {
     host.addEventListener('click', function (ev) {
@@ -1460,9 +1455,25 @@
       if (!rows.length) return '';
       return '<div class="pick-group"><i>' + g.label + '</i><div class="pick">' +
         rows.map(function (p) {
-          return '<button type="button" class="pchip' + (chosen[p.id] ? ' on' : '') + '" ' +
+          var vs = variantList(p);
+          var picked = Object.keys(chosen).filter(function (k) {
+            return splitToken(k).id === p.id;
+          });
+          var on = picked.length > 0;
+          var html = '<button type="button" class="pchip' + (on ? ' on' : '') + '" ' +
             'data-pname="' + esc(p.id) + '" data-pkind="' + esc(kindOf(p)) + '">' +
             esc(shortName(p)) + '</button>';
+          // 选中之后才展开款式，没选的时候不占地方
+          if (on && vs.length) {
+            html += '<span class="vpick">' + vs.map(function (v) {
+              var tk = joinToken(p.id, v);
+              return '<button type="button" class="pchip vsub' +
+                (chosen[tk] ? ' on' : '') + '" data-pname="' + esc(tk) + '" ' +
+                'data-pkind="' + esc(kindOf(p)) + '" data-base="' + esc(p.id) + '">' +
+                esc(v) + '</button>';
+            }).join('') + '</span>';
+          }
+          return html;
         }).join('') + '</div></div>';
     }).join('');
     return '<div class="pick-wrap" id="prodPick">' + html + '</div>';
@@ -1491,15 +1502,24 @@
       if (!b) return;
       var name = b.dataset.pname;
       var kind = b.dataset.pkind === 'makeup' ? 'makeup' : 'skincare';
+      var base = b.dataset.base || splitToken(name).id;
       var d = state.draft;
       d._touchedProducts = true;
       var arr = (d.products[kind] || []).slice();
       var at = arr.indexOf(name);
-      if (at >= 0) arr.splice(at, 1); else arr.push(name);
+
+      if (at >= 0) {
+        arr.splice(at, 1);
+      } else {
+        /* 同一件产品只留一条：点款式就是把它换成那个款式，
+           不是又加一件。一次只会用一个款式。 */
+        arr = arr.filter(function (t) { return splitToken(t).id !== base; });
+        arr.push(name);
+      }
       d.products[kind] = arr;
-      b.classList.toggle('on', at < 0);
       var box = $(kind === 'makeup' ? '#fMakeupProd' : '#fSkincare', host);
       if (box) box.value = arr.map(prodLabel).join('、');
+      renderCompose();   // 重画：选中后要把款式展开出来
     });
   }
 
@@ -2280,12 +2300,23 @@
   }
 
   function go(view) {
+    /* 切页面才回到顶部；原地重画要留在原位。
+       以前一律 scrollTo(0,0)，于是改个评分、折叠一条、编辑完保存，
+       页面都会弹回最上面 —— 手上正在看的位置全丢了。 */
+    var sameView = state.view === view;
+    var keepY = window.scrollY;
+
     state.view = view;
     $$('.view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + view); });
     $$('.tabbar button').forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
-    window.scrollTo(0, 0);
+    if (!sameView) window.scrollTo(0, 0);
     (RENDER[view] || function () {})();
     syncAppbarHeight();
+    if (sameView && keepY) {
+      window.scrollTo(0, keepY);
+      // 图片是异步填的，下一帧再定位一次才稳
+      requestAnimationFrame(function () { window.scrollTo(0, keepY); });
+    }
     if (view !== 'timeline') { selectMode = false; cmpSel = []; }
     syncTopBtn();
     hydratePhotos(document);
@@ -2865,6 +2896,20 @@
 
      老数据存的是名字，这里按名字兜底解析，所以不用迁移也能正常显示。 */
 
+  /* 记录里的一项可以带款式：「pid#积雪草」。
+     同一件产品换个款式（面膜换配方、眉笔换色号）本来就是一次变量改动，
+     记不下来的话「控制变量看效果」就无从比起。 */
+  function splitToken(t) {
+    var s = String(t || '');
+    var at = s.indexOf('#');
+    return at < 0 ? { id: s, variant: '' }
+                  : { id: s.slice(0, at), variant: s.slice(at + 1) };
+  }
+
+  function joinToken(id, variant) {
+    return variant ? id + '#' + variant : id;
+  }
+
   function prodById(id) {
     return allProducts().filter(function (p) { return p.id === id; })[0] || null;
   }
@@ -2879,20 +2924,29 @@
 
   // 记录里的一项 → 显示用的名字
   function prodLabel(token) {
-    var p = prodById(token) || prodByLabel(token);
-    return p ? shortName(p) : String(token || '');
+    var t = splitToken(token);
+    var p = prodById(t.id) || prodByLabel(token);
+    if (!p) return String(token || '');
+    return shortName(p) + (t.variant ? ' · ' + t.variant : '');
   }
 
   // 记录里的一项 → 用来比对的唯一键（有 id 用 id，没有就用名字）
+  // 换了款式也算「和上次不一样」，所以键里要带款式
   function prodKey(token) {
-    var p = prodById(token) || prodByLabel(token);
-    return p ? p.id : String(token || '');
+    var t = splitToken(token);
+    var p = prodById(t.id) || prodByLabel(token);
+    return p ? joinToken(p.id, t.variant) : String(token || '');
   }
 
   // 界面上填的名字 → 存进记录的值（库里有就存 id）
   function toToken(text) {
-    var p = prodByLabel(text);
-    return p ? p.id : String(text || '').trim();
+    var s = String(text || '').trim();
+    // 「敷尔佳面膜 · 积雪草」这种手打的也要能还原成 pid#款式
+    var parts = s.split(/\s*·\s*/);
+    var p = prodByLabel(parts[0]);
+    if (p && parts.length > 1) return joinToken(p.id, parts.slice(1).join(' · '));
+    p = p || prodByLabel(s);
+    return p ? p.id : s;
   }
 
   function shortName(p) {

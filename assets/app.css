@@ -1304,3 +1304,18 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
   border: 1px solid var(--line); background: var(--card);
   font-family: var(--sans); font-size: 16px;
 }
+
+/* 选中产品后展开的款式 */
+.vpick {
+  display: inline-flex; flex-wrap: wrap; gap: 4px;
+  margin-left: 4px; padding-left: 6px;
+  border-left: 1px solid var(--line);
+}
+.pchip.vsub {
+  font-size: 11px; padding: 3px 8px;
+  background: var(--card-2); color: var(--ink-faint);
+}
+.pchip.vsub.on {
+  background: var(--accent-bg); border-color: var(--accent);
+  color: var(--accent-ink);
+}
