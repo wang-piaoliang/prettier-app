@@ -3720,11 +3720,23 @@
   /* 同一单只记一次。
      判断「是不是同一单」看订单本身：日期 + 价格 + 规格都一样就是同一单 ——
      同一张截图传两次、或同一单里截了两张图，都不该变成两条记录。 */
+  /* 同一天、同价、同渠道，且款式不冲突 → 同一单。
+     「款式不冲突」= 有一边没写款式，或者写的只是数量（2片装）。
+     ⚠️ 不能只看日期和价格：同一天用同样的价格买了两个不同款式，
+     那是两张订单（依克多因和透明质酸就各是一单），合掉就丢记录了。 */
+  function buyVariant(b) {
+    var sp = String((b && b.spec) || '').trim();
+    return /^\d+\s*[片枚盒支只袋]装?$/.test(sp) ? '' : sp;
+  }
+
   function hasSameBuy(list, b) {
+    var bv = buyVariant(b);
     return (list || []).some(function (o) {
-      return o.date === b.date &&
-             (o.price == null ? '' : o.price) === (b.price == null ? '' : b.price) &&
-             (o.size || '') === (b.size || '');
+      if (o.date !== b.date) return false;
+      if ((o.price == null ? '' : o.price) !== (b.price == null ? '' : b.price)) return false;
+      if ((o.where || '') !== (b.where || '')) return false;
+      var ov = buyVariant(o);
+      return !ov || !bv || ov === bv;
     });
   }
 

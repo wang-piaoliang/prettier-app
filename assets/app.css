@@ -1358,3 +1358,14 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
   color: var(--ink-faint); font-size: 13px; line-height: 1; opacity: .65;
 }
 .pd-tools button.danger { color: var(--focus); }
+
+/* 标题栏：同步状态那颗点平时不用出现，只在离线/出错时提示 */
+.syncdot { display: none; }
+.syncdot.off, .syncdot.err { display: inline-block; }
+
+/* 右侧几个图标按钮排在同一条基线上 */
+.appbar { align-items: center; }
+.appbar .glyphbtn, .appbar .iconbtn { align-self: center; vertical-align: middle; }
+
+/* ⌄ 这个字符本身重心就偏下，和 ↻ ◔ ◎ 摆一起会低半格，单独补偿 */
+#foldAllBtn { line-height: 1; padding-bottom: 5px; }
