@@ -1427,3 +1427,14 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
 
 /* ◎ 这个字形本身就比 ↻ ◔ ⌄ 大一圈，单独压小一点才在一条线上 */
 #settingsBtn { font-size: 14px; }
+
+.memo-text { white-space: pre-wrap; }
+.care-row .cr-top .care-what:empty { flex: 1; }
+
+/* 产品搜索框 */
+#prodSearch {
+  width: 100%; margin: 0 0 14px; padding: 9px 13px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--card);
+  font-family: var(--sans); font-size: 16px; color: var(--ink);
+}
+#prodSearch::placeholder { color: var(--ink-faint); }

@@ -41,18 +41,21 @@
 
   /* 所有多行输入框都随内容长高。
      写长了看不见前面写过什么，很难接着写 —— 备注、评价、小结都一样。 */
-  function autoGrow(root) {
-    $$('textarea', root || document).forEach(function (t) {
-      if (t.dataset.grow) return;
-      t.dataset.grow = '1';
-      var fit = function () {
-        t.style.height = 'auto';
-        t.style.height = Math.min(t.scrollHeight + 2, 460) + 'px';
-      };
-      t.addEventListener('input', fit);
-      fit();
-    });
+  /* 所有多行输入框都随行数长高。
+     用事件委托挂在 document 上，不管框是什么时候造出来的都管用 ——
+     一个个去绑总会漏掉新加的地方，用户反复反馈「只留一行，看不到写了什么」。 */
+  function fitBox(t) {
+    if (!t || t.tagName !== 'TEXTAREA') return;
+    t.style.height = 'auto';
+    t.style.height = Math.min(t.scrollHeight + 2, 460) + 'px';
   }
+
+  function autoGrow(root) {
+    $$('textarea', root || document).forEach(fitBox);
+  }
+
+  document.addEventListener('input', function (ev) { fitBox(ev.target); }, true);
+  document.addEventListener('focusin', function (ev) { fitBox(ev.target); }, true);
 
   function el(html) {
     // 这里造出来的框大多带 textarea，统一挂上自动长高
@@ -1086,10 +1089,6 @@
   function renderMainlines() {
     var host = $('#view-mainlines');
     var ml = (state.data && state.data.mainlines) || [];
-    if (!ml.length) {
-      host.innerHTML = '<div class="empty">还没有主线问题。</div>';
-      return;
-    }
 
     var card = function (m, idx) {
       var body = [
@@ -1112,7 +1111,7 @@
     /* 顺序按看的频率来：体重每天称、护肤记录常写、
        「在跟的问题」是长期背景，放最后。 */
     host.innerHTML =
-      weightHTML() + careHTML() +
+      weightHTML() + workoutHTML() + careHTML() + memoHTML() +
       foldSection('ml', '在跟的问题', ml.map(card).join('')) +
       procedureHTML();
 
@@ -1127,6 +1126,20 @@
         if (ce) return openCareEditor(ce.closest('.care-row'), null, ce.dataset.cEdit);
         var cx = ev.target.closest('[data-c-del]');
         if (cx) return deleteCare(cx.dataset.cDel);
+
+        var aWk = ev.target.closest('#addWorkout');
+        if (aWk) return openWorkoutEditor(aWk.closest('.care-add'));
+        var wkE = ev.target.closest('[data-wk-edit]');
+        if (wkE) return openWorkoutEditor(wkE.closest('.care-row'), wkE.dataset.wkEdit);
+        var wkD = ev.target.closest('[data-wk-del]');
+        if (wkD) return deleteWorkout(wkD.dataset.wkDel);
+
+        var aMe = ev.target.closest('#addMemo');
+        if (aMe) return openMemoEditor(aMe.closest('.care-add'));
+        var meE = ev.target.closest('[data-memo-edit]');
+        if (meE) return openMemoEditor(meE.closest('.care-row'), meE.dataset.memoEdit);
+        var meD = ev.target.closest('[data-memo-del]');
+        if (meD) return deleteMemo(meD.dataset.memoDel);
 
         var mf = ev.target.closest('[data-mlfold]');
         if (mf) {
@@ -1195,6 +1208,246 @@
     return (open ? rows : rows.slice(0, n)).join('') +
       '<button class="more-toggle" type="button" data-mlmore="' + esc(key) + '">' +
         (open ? '收起' : '还有 ' + (rows.length - n) + ' 条') + '</button>';
+  }
+
+
+  /* ================= 运动 =================
+     游泳、健身（练了哪几块）、时长。
+     记下来是为了和皮肤对照 —— 出汗、作息、强度都会写在脸上。 */
+
+  var SPORTS = [
+    { key: 'swim', label: '游泳' },
+    { key: 'gym', label: '健身' },
+    { key: 'run', label: '跑步' },
+    { key: 'yoga', label: '瑜伽' },
+    { key: 'walk', label: '走路' },
+    { key: 'other', label: '其他' },
+  ];
+  var BODY_PARTS = ['背', '臀', '上肢', '下肢', '核心', '全身'];
+
+  function workoutList() {
+    return ((state.data && state.data.workouts) || []).slice()
+      .sort(function (x, y) { return (x.at || '') < (y.at || '') ? 1 : -1; });
+  }
+
+  function sportLabel(k) {
+    var s = SPORTS.filter(function (x) { return x.key === k; })[0];
+    return s ? s.label : (k || '运动');
+  }
+
+  function workoutHTML() {
+    var ws = workoutList();
+
+    // 本周和本月各练了多久 —— 这是最想一眼看到的两个数
+    var now = new Date();
+    var monday = new Date(now);
+    monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+    var wkStart = monday.toISOString().slice(0, 10);
+    var moStart = todayISO().slice(0, 7);
+    var sum = function (test) {
+      return ws.filter(test).reduce(function (n, w) { return n + (w.mins || 0); }, 0);
+    };
+    var wkMin = sum(function (w) { return (w.at || '').slice(0, 10) >= wkStart; });
+    var moMin = sum(function (w) { return (w.at || '').slice(0, 7) === moStart; });
+    var wkCnt = ws.filter(function (w) { return (w.at || '').slice(0, 10) >= wkStart; }).length;
+
+    var rows = ws.map(function (w) {
+      return '<div class="care-row" data-wkid="' + esc(w.id) + '">' +
+        '<div class="cr-top">' +
+          '<b>' + esc(fmtDate((w.at || '').slice(0, 10))) + '</b>' +
+          '<span class="care-what">' + esc(sportLabel(w.type)) +
+            ((w.parts && w.parts.length) ? ' · ' + esc(w.parts.join('、')) : '') + '</span>' +
+          (w.mins ? '<span class="pill">' + w.mins + ' 分</span>' : '') +
+          '<button class="rv-edit" data-wk-edit="' + esc(w.id) + '" aria-label="改">✎</button>' +
+          '<button class="rv-edit" data-wk-del="' + esc(w.id) + '" aria-label="删">×</button>' +
+        '</div>' +
+        (w.note ? '<div class="cr-note">' + esc(w.note) + '</div>' : '') +
+      '</div>';
+    });
+
+    return foldSection('sport', '运动', '<div class="card">' +
+        '<div class="w-now">' +
+          '<span class="w-kg">' + Math.round(wkMin / 60 * 10) / 10 + '<i>小时/本周</i></span>' +
+          '<span class="pill">' + wkCnt + ' 次</span>' +
+          '<span class="pill">本月 ' + Math.round(moMin / 60 * 10) / 10 + ' 小时</span>' +
+        '</div>' +
+        '<div class="care-add">' +
+          '<button class="more-toggle" id="addWorkout" type="button">＋ 记一次运动</button>' +
+        '</div>' +
+        (rows.length ? '<div class="w-list">' + limitRows('sport', rows) + '</div>' : '') +
+      '</div>');
+  }
+
+  function openWorkoutEditor(anchor, editId) {
+    if (document.getElementById('wk-edit')) return;
+    var cur = editId ? workoutList().filter(function (x) { return x.id === editId; })[0] : null;
+    var sel = {
+      type: (cur && cur.type) || 'gym',
+      parts: (cur && cur.parts) ? cur.parts.slice() : [],
+      mins: (cur && cur.mins) || 60,
+    };
+
+    var body = function () {
+      return '<div class="pick">' + SPORTS.map(function (s) {
+          return '<button type="button" class="pchip' + (sel.type === s.key ? ' on' : '') +
+            '" data-wtype="' + s.key + '">' + esc(s.label) + '</button>';
+        }).join('') + '</div>' +
+        (sel.type === 'gym'
+          ? '<div class="pick" style="margin-top:6px">' + BODY_PARTS.map(function (p) {
+              return '<button type="button" class="pchip vsub' +
+                (sel.parts.indexOf(p) >= 0 ? ' on' : '') + '" data-wpart="' + esc(p) + '">' +
+                esc(p) + '</button>';
+            }).join('') + '</div>'
+          : '') +
+        '<div class="score-row" style="margin-top:10px">' +
+          '<span class="score-val">' + sel.mins + '<i style="font-size:11px"> 分</i></span>' +
+          '<input type="range" id="wk-mins" min="10" max="180" step="5" value="' + sel.mins + '">' +
+        '</div>';
+    };
+
+    var box = el(
+      '<div class="inline-edit" id="wk-edit">' +
+        '<input type="date" id="wk-date" value="' +
+          (cur ? esc((cur.at || '').slice(0, 10)) : todayISO()) + '">' +
+        '<div id="wk-body" style="margin-top:8px">' + body() + '</div>' +
+        '<textarea id="wk-note" placeholder="备注（可留空）" style="margin-top:8px">' +
+          esc((cur && cur.note) || '') + '</textarea>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">' + (cur ? '保存' : '记下') + '</button>' +
+        '</div>' +
+      '</div>'
+    );
+    anchor.replaceWith ? anchor.insertAdjacentElement('afterend', box) : anchor.appendChild(box);
+
+    var host = box.querySelector('#wk-body');
+    host.addEventListener('click', function (ev) {
+      var t = ev.target.closest('[data-wtype]');
+      if (t) { sel.type = t.dataset.wtype; host.innerHTML = body(); bindMins(); return; }
+      var p = ev.target.closest('[data-wpart]');
+      if (p) {
+        var v = p.dataset.wpart, at = sel.parts.indexOf(v);
+        if (at >= 0) sel.parts.splice(at, 1); else sel.parts.push(v);
+        host.innerHTML = body();
+        bindMins();
+      }
+    });
+    var bindMins = function () {
+      var r = box.querySelector('#wk-mins');
+      if (!r) return;
+      r.addEventListener('input', function () {
+        sel.mins = Number(this.value);
+        box.querySelector('.score-val').innerHTML = sel.mins + '<i style="font-size:11px"> 分</i>';
+      });
+    };
+    bindMins();
+
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var date = box.querySelector('#wk-date').value || todayISO();
+      var rec = {
+        id: cur ? cur.id : 'wk' + Date.now().toString(36),
+        at: date + 'T' + nowLocal().slice(11),
+        type: sel.type,
+        parts: sel.type === 'gym' ? sel.parts : undefined,
+        mins: sel.mins,
+        note: box.querySelector('#wk-note').value.trim() || undefined,
+      };
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      box.remove();
+      saveWorkout(rec);
+    });
+  }
+
+  function saveWorkout(rec) {
+    var list = ((state.data && state.data.workouts) || [])
+      .filter(function (x) { return x.id !== rec.id; }).concat([rec]);
+    persistList('workouts', list, '运动：' + sportLabel(rec.type));
+  }
+
+  function deleteWorkout(id) {
+    if (!confirm('删掉这条运动记录？')) return;
+    persistList('workouts',
+      ((state.data && state.data.workouts) || []).filter(function (x) { return x.id !== id; }),
+      '运动：删掉一条');
+  }
+
+  /* ================= 随手记 =================
+     想到什么记什么：用法、教训、下次注意。一条一条的，像备忘录。 */
+
+  function noteList() {
+    return ((state.data && state.data.notes) || []).slice()
+      .sort(function (x, y) { return (x.at || '') < (y.at || '') ? 1 : -1; });
+  }
+
+  function memoHTML() {
+    var rows = noteList().map(function (n) {
+      return '<div class="care-row" data-memo="' + esc(n.id) + '">' +
+        '<div class="cr-top">' +
+          '<b>' + esc(fmtDate((n.at || '').slice(0, 10))) + '</b>' +
+          '<span class="care-what"></span>' +
+          '<button class="rv-edit" data-memo-edit="' + esc(n.id) + '" aria-label="改">✎</button>' +
+          '<button class="rv-edit" data-memo-del="' + esc(n.id) + '" aria-label="删">×</button>' +
+        '</div>' +
+        '<div class="cr-note memo-text">' + esc(n.text || '') + '</div>' +
+      '</div>';
+    });
+
+    return foldSection('memo', '随手记', '<div class="card">' +
+        '<div class="care-add">' +
+          '<button class="more-toggle" id="addMemo" type="button">＋ 记一条</button>' +
+        '</div>' +
+        (rows.length ? '<div class="w-list">' + limitRows('memo', rows) + '</div>'
+                     : '<div class="tiny">想到什么记什么：用法、教训、下次注意。</div>') +
+      '</div>');
+  }
+
+  function openMemoEditor(anchor, editId) {
+    if (document.getElementById('memo-edit')) return;
+    var cur = editId ? noteList().filter(function (x) { return x.id === editId; })[0] : null;
+    var box = el(
+      '<div class="inline-edit" id="memo-edit">' +
+        '<textarea id="memo-text" placeholder="随手记一条…">' +
+          esc((cur && cur.text) || '') + '</textarea>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">' + (cur ? '保存' : '记下') + '</button>' +
+        '</div>' +
+      '</div>'
+    );
+    anchor.insertAdjacentElement('afterend', box);
+    box.querySelector('#memo-text').focus();
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var t = box.querySelector('#memo-text').value.trim();
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      box.remove();
+      if (!t) return;
+      var rec = { id: cur ? cur.id : 'me' + Date.now().toString(36),
+                  at: cur ? cur.at : nowLocal(), text: t };
+      persistList('notes',
+        ((state.data && state.data.notes) || [])
+          .filter(function (x) { return x.id !== rec.id; }).concat([rec]),
+        '随手记');
+    });
+  }
+
+  function deleteMemo(id) {
+    if (!confirm('删掉这条？')) return;
+    persistList('notes',
+      ((state.data && state.data.notes) || []).filter(function (x) { return x.id !== id; }),
+      '随手记：删掉一条');
+  }
+
+  /* settings.json 里某个列表的通用保存：先本地生效，再后台提交。 */
+  function persistList(key, list, message) {
+    if (state.data) state.data[key] = list;
+    refresh('mainlines');
+    return GitStore.updateJSON('settings.json', function (remote) {
+      var base = remote || {};
+      base[key] = list;
+      return base;
+    }, message).catch(function (e) { toast('保存失败：' + (e.message || e), true); });
   }
 
   function careList() {
@@ -3036,9 +3289,18 @@
     return rs.reduce(function (x, y) { return x + y; }, 0) / rs.length;
   }
 
+  var prodQuery = '';
+
+  function matchProduct(p, q) {
+    if (!q) return true;
+    var hay = [p.short, p.name, p.brand, p.category, (p.variants || []).join(' ')]
+      .filter(Boolean).join(' ').toLowerCase();
+    return q.toLowerCase().split(/\s+/).every(function (w) { return hay.indexOf(w) >= 0; });
+  }
+
   function renderProducts() {
     var host = $('#view-products');
-    var list = allProducts();
+    var list = allProducts().filter(function (p) { return matchProduct(p, prodQuery); });
 
     var body = '';
     KINDS.forEach(function (k) {
@@ -3079,6 +3341,9 @@
           retired.map(prodCardHTML).join('') + '</div>';
     }
 
+    if (!body && prodQuery) {
+      body = '<div class="empty">没有匹配「' + esc(prodQuery) + '」的产品</div>';
+    }
     if (!body) {
       body = '<div class="empty"><strong>产品库还是空的</strong>' +
         '拍一张护肤品或彩妆的照片，AI 会认出品牌和品名。</div>';
@@ -3090,10 +3355,25 @@
           list.filter(function (p) { return p.status !== 'retired'; }).length + ' 件在用</span>' +
         '<button id="scanBtn" type="button">＋ 拍照识别</button>' +
       '</div>' +
+      /* 三十多件之后，翻列表找一支眼线笔比搜一下慢多了。
+         品名、品牌、款式、类别都能搜 —— 记不清全名时按品牌找也行。 */
+      '<input type="search" id="prodSearch" placeholder="搜产品（品名 / 品牌 / 款式）" ' +
+        'value="' + esc(prodQuery) + '" autocapitalize="off" autocorrect="off">' +
       '<div id="scanOut"></div>' + body +
       '<button class="more-toggle" id="addProdBtn" type="button">手动添加一件</button>';
 
     bindProdDrag(host);
+    var sBox = $('#prodSearch', host);
+    if (sBox) {
+      sBox.addEventListener('input', function () {
+        prodQuery = this.value.trim();
+        var pos = this.selectionStart;
+        renderProducts();
+        // 重画之后把焦点和光标放回去，不然打一个字就跳出来
+        var again = $('#prodSearch');
+        if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) {} }
+      });
+    }
     $('#scanBtn', host).addEventListener('click', function () { $('#prodInput').click(); });
     $('#addProdBtn', host).addEventListener('click', function () {
       addProductManually(this);
