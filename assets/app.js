@@ -46,8 +46,14 @@
      一个个去绑总会漏掉新加的地方，用户反复反馈「只留一行，看不到写了什么」。 */
   function fitBox(t) {
     if (!t || t.tagName !== 'TEXTAREA') return;
+    /* ⚠️ 元素还没布局出来时 scrollHeight 是 0，
+       照着设就变成 2px，而 2px 高的框 scrollHeight 仍然是 0 ——
+       从此再也长不回来。所以量不到就把内联高度清掉，交回给 CSS。 */
+    if (!t.getClientRects().length) { t.style.height = ''; return; }
     t.style.height = 'auto';
-    t.style.height = Math.min(t.scrollHeight + 2, 460) + 'px';
+    var h = t.scrollHeight;
+    if (!h) { t.style.height = ''; return; }
+    t.style.height = Math.min(h + 2, 460) + 'px';
   }
 
   function autoGrow(root) {
@@ -1219,6 +1225,7 @@
     { key: 'swim', label: '游泳' },
     { key: 'gym', label: '健身' },
     { key: 'run', label: '跑步' },
+    { key: 'climb', label: '攀岩' },
     { key: 'yoga', label: '瑜伽' },
     { key: 'walk', label: '走路' },
     { key: 'other', label: '其他' },
@@ -2007,14 +2014,13 @@
       '</div>' +
 
       '<div class="field"><label>这次打几分</label>' +
-        '<div class="score-row">' +
+        '<div class="score-row' + (d.rating == null ? ' unset' : '') + '">' +
           '<span class="score-val" id="fRateVal">' +
-            (d.rating == null ? '—' : d.rating.toFixed(1)) + '</span>' +
+            (d.rating == null ? '未打分' : d.rating.toFixed(1)) + '</span>' +
           '<input type="range" id="fRate" min="0" max="5" step="0.1" value="' +
             (d.rating == null ? 3 : d.rating) + '">' +
-          (d.rating == null
-            ? '<button class="more-toggle" id="fRateOn" type="button">打分</button>'
-            : '<button class="more-toggle" id="fRateOff" type="button">不打</button>') +
+          (d.rating == null ? '' :
+            '<button class="more-toggle" id="fRateOff" type="button">清除</button>') +
         '</div>' +
       '</div>' +
 
@@ -2146,16 +2152,14 @@
     $('#fDate', host).addEventListener('change', syncAt);
     $('#fTime', host).addEventListener('change', syncAt);
     $('#fLight', host).addEventListener('input', function () { d.light = this.value; });
+    /* 一拖就算打分了，不用先点个按钮开启 ——
+       拖了滑块却不算数是最容易踩空的地方。 */
     var rate = $('#fRate', host), rateVal = $('#fRateVal', host);
+    var wasUnset = d.rating == null;
     rate.addEventListener('input', function () {
       d.rating = Number(this.value);
       rateVal.textContent = d.rating.toFixed(1);
-      var on = $('#fRateOn', host);
-      if (on) on.remove();
-    });
-    on('#fRateOn', 'click', function () {
-      d.rating = Number(rate.value);
-      renderCompose();
+      if (wasUnset) { wasUnset = false; renderCompose(); }
     });
     on('#fRateOff', 'click', function () {
       d.rating = null;
@@ -3486,8 +3490,10 @@
   function prodLabel(token) {
     var t = splitToken(token);
     var p = prodById(t.id) || prodByLabel(token);
-    if (!p) return String(token || '');
-    return shortName(p) + (t.variant ? ' · ' + t.variant : '');
+    if (p) return shortName(p) + (t.variant ? ' · ' + t.variant : '');
+    // 像 id 的（一串小写字母数字、没有中文）就别当名字显示了
+    var s = String(token || '');
+    return /^[a-z0-9]{6,}$/.test(s) ? '已删除的产品' : s;
   }
 
   // 记录里的一项 → 用来比对的唯一键（有 id 用 id，没有就用名字）
@@ -4158,9 +4164,32 @@
     });
   }
 
+
+  /* 产品被删掉之后，把记录里指向它的引用一并摘掉。 */
+  function clearProductRefs(pid) {
+    var strip = function (list) {
+      return (list || []).filter(function (t) { return String(t).split('#')[0] !== pid; });
+    };
+    ((state.data && state.data.entries) || []).forEach(function (e) {
+      if (!e.products) return;
+      e.products.skincare = strip(e.products.skincare);
+      e.products.makeup = strip(e.products.makeup);
+    });
+    return GitStore.updateJSON('entries.json', function (remote) {
+      return (remote || []).map(function (e) {
+        if (!e.products) return e;
+        var y = Object.assign({}, e);
+        y.products = { skincare: strip(e.products.skincare), makeup: strip(e.products.makeup) };
+        return y;
+      });
+    }, '清掉已删除产品的引用').catch(function () {});
+  }
+
   function removeProduct(id) {
     var p = allProducts().filter(function (x) { return x.id === id; })[0];
-    if (!p || !confirm('从产品库删除「' + p.name + '」？')) return;
+    if (!p || !confirm('从产品库删除「' + shortName(p) + '」？')) return;
+    // 记录里引用的是 id，产品没了不清引用，时间线上就会露出一串 id
+    clearProductRefs(id);
     saveProducts(allProducts().filter(function (x) { return x.id !== id; }), '产品库：删除 ' + p.name)
       .then(function () { toast('已删除'); })
       .catch(function (e) { toast('失败：' + e.message, true); });

@@ -1438,3 +1438,7 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
   font-family: var(--sans); font-size: 16px; color: var(--ink);
 }
 #prodSearch::placeholder { color: var(--ink-faint); }
+
+/* 还没打分时把滑条压淡，一眼看出是「未设」 */
+.score-row.unset input[type="range"] { opacity: .45; }
+.score-row.unset .score-val { color: var(--ink-faint); font-size: 13px; }
