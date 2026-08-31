@@ -1119,7 +1119,14 @@
     host.innerHTML =
       weightHTML() + workoutHTML() + careHTML() + memoHTML() +
       foldSection('ml', '在跟的问题', ml.map(card).join('')) +
-      procedureHTML();
+      procedureHTML() + mapHTML();
+
+    bindSkinMap(host);
+    hydratePhotos(host);
+    // 第一次进主线才去拉地图数据，拉到再重画一次
+    if (!skinMap) {
+      loadSkinMap().then(function (d) { if (d) refresh('mainlines'); });
+    }
 
     if (!host.dataset.bound) {
       host.dataset.bound = '1';
@@ -1216,6 +1223,122 @@
         (open ? '收起' : '还有 ' + (rows.length - n) + ' 条') + '</button>';
   }
 
+
+
+  /* ================= 皮肤地图 =================
+     从 skin 那份分析同步过来：5 张照片、50 处标注、7 类分色。
+     原页面是左图右列的桌面布局，手机上放不下 ——
+     这里改成图在上、条目在下，点哪边另一边跟着高亮。
+
+     照片存在仓库里当普通图片，走已有的懒加载和 IndexedDB 缓存；
+     不像原页面那样 base64 内嵌，每次打开都要拉 1.7MB。 */
+
+  var MAP_COLORS = {
+    abnom: '#7b6aa8',
+    lentigo: '#b98a4a',
+    nevus: '#6b4f3f',
+    comedo: '#4a6b7b',
+    pore: '#5f8a6a',
+    acne: '#b05a52',
+    redness: '#c07a86',
+  };
+
+  var skinMap = null;        // 加载后的 json
+  var mapPhoto = 0;          // 当前看第几张
+  var mapCats = null;        // 打开着的分类
+  var mapPick = null;        // 当前高亮的标注
+
+  function loadSkinMap() {
+    if (skinMap) return Promise.resolve(skinMap);
+    return GitStore.readJSON('skin-map.json').then(function (d) {
+      skinMap = d;
+      if (d && !mapCats) mapCats = Object.keys(d.cats || {});
+      return d;
+    }).catch(function () { return null; });
+  }
+
+  function mapHTML() {
+    if (!skinMap || !(skinMap.photos || []).length) {
+      return foldSection('map', '皮肤地图',
+        '<div class="card"><div class="tiny">加载中…</div></div>');
+    }
+    var p = skinMap.photos[Math.min(mapPhoto, skinMap.photos.length - 1)];
+    var cats = skinMap.cats || {};
+    var on = function (c) { return mapCats.indexOf(c) >= 0; };
+
+    // 每类各有多少处，关掉时也看得见数量
+    var cnt = {};
+    skinMap.photos.forEach(function (ph) {
+      (ph.marks || []).forEach(function (m) { cnt[m.cat] = (cnt[m.cat] || 0) + 1; });
+    });
+
+    var chips = Object.keys(cats).map(function (c) {
+      return '<button type="button" class="mapchip' + (on(c) ? '' : ' off') + '" ' +
+        'data-mapcat="' + esc(c) + '" style="--mc:' + MAP_COLORS[c] + '">' +
+        '<i></i>' + esc(cats[c]) + '<b>' + (cnt[c] || 0) + '</b></button>';
+    }).join('');
+
+    var tabs = skinMap.photos.map(function (ph, i) {
+      return '<button type="button" class="maptab' + (i === mapPhoto ? ' on' : '') + '" ' +
+        'data-mapph="' + i + '">' + (i + 1) + '</button>';
+    }).join('');
+
+    var marks = (p.marks || []).map(function (m, i) {
+      if (!on(m.cat)) return '';
+      return '<span class="mk' + (m.shape === 'region' ? ' region' : '') +
+        (mapPick === i ? ' on' : '') + '" data-mapmk="' + i + '" style="--mc:' +
+        MAP_COLORS[m.cat] + ';left:' + m.x + '%;top:' + m.y + '%;width:' + m.w +
+        '%;height:' + m.h + '%"><b>' + (i + 1) + '</b></span>';
+    }).join('');
+
+    var items = (p.marks || []).map(function (m, i) {
+      if (!on(m.cat)) return '';
+      return '<div class="mapitem' + (mapPick === i ? ' on' : '') + '" data-mapmk="' + i + '" ' +
+        'style="--mc:' + MAP_COLORS[m.cat] + '">' +
+        '<span class="mi-n">' + (i + 1) + '</span>' +
+        '<div><div class="mi-c">' + esc(cats[m.cat] || m.cat) + '</div>' +
+        '<h5>' + esc(m.title) + (m.flag ? '<span class="mi-flag">请医生看</span>' : '') + '</h5>' +
+        (m.desc ? '<p>' + esc(m.desc) + '</p>' : '') + '</div></div>';
+    }).join('');
+
+    var total = skinMap.photos.reduce(function (n, x) { return n + (x.marks || []).length; }, 0);
+
+    return foldSection('map', '皮肤地图',
+      '<div class="card mapcard">' +
+        '<div class="tiny" style="margin-bottom:10px">' +
+          esc(skinMap.source || '') + ' · 共 ' + total + ' 处标注</div>' +
+        '<div class="mapbar">' + chips + '</div>' +
+        '<div class="maptabs">' + tabs +
+          '<span class="mapname">' + esc(p.title) + '</span></div>' +
+        '<div class="mapstage">' +
+          '<img data-key="skin-map/' + esc(p.file) + '" alt="">' +
+          '<div class="maplayer">' + marks + '</div>' +
+        '</div>' +
+        '<div class="maplist">' + items + '</div>' +
+      '</div>');
+  }
+
+  function bindSkinMap(host) {
+    if (host.dataset.mapBound) return;
+    host.dataset.mapBound = '1';
+    host.addEventListener('click', function (ev) {
+      var c = ev.target.closest('[data-mapcat]');
+      if (c) {
+        var k = c.dataset.mapcat, at = mapCats.indexOf(k);
+        if (at >= 0) mapCats.splice(at, 1); else mapCats.push(k);
+        mapPick = null;
+        return refresh('mainlines');
+      }
+      var t = ev.target.closest('[data-mapph]');
+      if (t) { mapPhoto = Number(t.dataset.mapph); mapPick = null; return refresh('mainlines'); }
+      var m = ev.target.closest('[data-mapmk]');
+      if (m) {
+        var i = Number(m.dataset.mapmk);
+        mapPick = (mapPick === i) ? null : i;
+        return refresh('mainlines');
+      }
+    });
+  }
 
   /* ================= 运动 =================
      游泳、健身（练了哪几块）、时长。
