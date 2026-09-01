@@ -139,6 +139,34 @@
   var toastTimer;
   /* 本地存了多少还没传上去 —— 必须显眼。
      数据只在这台手机上的时候，人得知道，不然会以为已经安全了。 */
+
+  /* 本地攒下的东西，一旦云端接得上就自己传，不用等人点按钮。
+     踩过一次：手机离线时记了一下午，横幅在顶上没被注意到，
+     人以为已经存进云端了，第二天在别的设备上看就是「都没了」。 */
+  var draining = false;
+
+  function autoDrain() {
+    if (draining || !state.token) return;
+    var p = GitStore.pending();
+    if (!p || !p.total) return;
+
+    draining = true;
+    syncDot('busy', '正在补传 ' + p.total + ' 项');
+    GitStore.drain(function (t) { syncDot('busy', t); })
+      .then(function () {
+        draining = false;
+        toast('已把本地的 ' + p.total + ' 项传上云端');
+        return loadData();
+      })
+      .catch(function (err) {
+        draining = false;
+        syncDot('err', '补传失败');
+        // 失败不吭声最危险 —— 人会以为已经传上去了
+        toast('还有 ' + p.total + ' 项没传上去：' + (err.message || err), true);
+        renderPending();
+      });
+  }
+
   function renderPending() {
     var host = $('#pending');
     if (!host) return;
@@ -249,6 +277,7 @@
         set(LS.cache, JSON.stringify({ data: settings, tree: state.tree }));
         syncDot('', '已同步');
         renderPending();
+        autoDrain();          // 本地还欠着的，连上就自己补传
         return settings;
       })
       .catch(function (err) {
@@ -2618,11 +2647,27 @@
         if (state.view === back) refresh(back);
       });
     }).catch(function (err) {
-      job.state = 'failed';
-      job.error = (err.step ? '「' + err.step + '」' : '') + (err.message || err);
-      running = false;
-      renderQueue();
-      toast('保存失败：' + job.error, true);
+      /* ⚠️ 队列只活在内存里。提交失败就这么放着，人一刷新或关掉页面，
+         照片连同记录一起没了 —— 而照片是当场拍的，丢了补不回来。
+         所以失败要立刻转存本地（IndexedDB），等下次连上再补传。 */
+      var why = (err.step ? '「' + err.step + '」' : '') + (err.message || err);
+      return GitStore.goLocal(seedFromCache())
+        .then(function () { return runJob(job); })     // 现在会落到本地
+        .then(function () {
+          queue.shift();
+          running = false;
+          renderQueue();
+          renderPending();
+          toast('云端没传成功，已存在手机上，等会儿自动补传', true);
+        })
+        .catch(function (e2) {
+          // 连本地都存不下才算真失败
+          job.state = 'failed';
+          job.error = why;
+          running = false;
+          renderQueue();
+          toast('保存失败：' + why + '（本地也没存下：' + (e2.message || e2) + '）', true);
+        });
     }).then(function () { pump(); });
   }
 
