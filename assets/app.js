@@ -4537,6 +4537,10 @@
     { k: 'size',     label: '规格',   type: 'text',   ph: '如 50ml / 30g' },
     { k: 'variants', label: '款式/色号', type: 'text', ph: '顿号分隔，如 积雪草、依克多因' },
     { k: 'spec',     label: '成分/参数', type: 'text', ph: '如 SPF50+ PA++++' },
+    /* 成分表和上面的 spec 不是一回事：spec 是一句话参数（SPF50+ PA++++），
+       这里是整张成分表，几十项。分开存 —— 一个字段两种用法迟早打架。 */
+    { k: 'ingredients', label: '成分表', type: 'textarea',
+      ph: '抄包装或官方客服给的全表，顿号分隔' },
     { k: 'start',    label: '购买/开始', type: 'date' },
     { k: 'end',      label: '停用',   type: 'date' },
     { k: 'note',     label: '备注',   type: 'text' },
@@ -4576,15 +4580,31 @@
       if (f.k === 'spec' && buysAll.length) return false;   // 已并进购买记录那一行
       return true;
     }).map(function (f) {
+      /* 成分表几十项，平铺开会把详情里其它字段全挤没。
+         用原生 details 折起来 —— 不用写 JS，展开状态浏览器自己管。 */
+      if (f.type === 'textarea') {
+        var val = String(p[f.k]);
+        var cnt = val.split(/[、,，;；\n]/).filter(function (x) { return x.trim(); }).length;
+        return '<details class="pd-fold"><summary>' + esc(f.label) +
+          '<i>' + cnt + ' 项</i></summary><div>' + esc(val) + '</div></details>';
+      }
       return '<div class="pd-row read"><span>' + esc(f.label) + '</span>' +
         '<b>' + esc(String(p[f.k])) + (f.unit || '') + '</b></div>';
     }).join('');
 
     var editRows = PROD_FIELDS.map(function (f) {
+      var val = esc(p[f.k] == null ? '' : p[f.k]);
+      /* textarea 单独走一支：成分表塞进一行输入框根本改不了。
+         标签改成占一整行，输入区才有宽度。 */
+      if (f.type === 'textarea') {
+        return '<label class="pd-row col"><span>' + esc(f.label) + '</span>' +
+          '<textarea data-f="' + f.k + '" rows="5"' +
+          (f.ph ? ' placeholder="' + esc(f.ph) + '"' : '') + '>' + val + '</textarea></label>';
+      }
       return '<label class="pd-row"><span>' + esc(f.label) + '</span>' +
         '<input type="' + f.type + '" data-f="' + f.k + '" ' +
         (f.ph ? 'placeholder="' + esc(f.ph) + '" ' : '') +
-        'value="' + esc(p[f.k] == null ? '' : p[f.k]) + '">' +
+        'value="' + val + '">' +
         (f.unit ? '<i>' + f.unit + '</i>' : '') + '</label>';
     }).join('');
 
