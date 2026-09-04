@@ -1435,11 +1435,13 @@
   var TAG_SETS = {
     zone: {
       label: '部位',
+      ph: '新部位，比如「泪沟」',
       def: ['下巴', '泪沟', '黑头', '脸颊', '鼻翼', '额头', '法令纹', '眼下', '唇周', '痘印'],
     },
     /* 运动这组带 key：记录里存的是 key，所以改名字不用动老记录 */
     sport: {
       label: '运动',
+      ph: '新项目，比如「普拉提」',
       keyed: true,
       def: [
         { k: 'swim', label: '游泳' },
@@ -1451,23 +1453,28 @@
         { k: 'other', label: '其他' },
       ],
     },
-    gym: { label: '健身部位', def: ['背', '臀', '上肢', '下肢', '核心', '全身'] },
+    gym: { label: '健身部位', ph: '新部位，比如「肩」',
+           def: ['背', '臀', '上肢', '下肢', '核心', '全身'] },
     body: {
       label: '身体',
+      ph: '还有什么情况，比如「拉肚子」',
       def: ['姨妈', '睡不好', '头疼', '胃疼', '腰酸', '肩颈',
             '嗓子疼', '感冒', '过敏', '乏力', '水肿', '便秘'],
     },
     proc: {
       label: '医美项目',
+      ph: '还做过什么，比如「热玛吉」',
       def: ['光子嫩肤', '超皮秒', '热玛吉', '超声炮', '水光针',
             '肉毒素', '玻尿酸', '点阵激光', '果酸焕肤', '小气泡'],
     },
     mkstate: {
       label: '持妆状态',
+      ph: '新状态，比如「浮粉」',
       def: ['泛油光', '斑驳', '卡粉', '脱妆', '暗沉', '干纹', '完好'],
     },
     light: {
       label: '光线',
+      ph: '新光线，比如「浴室灯」',
       def: ['窗边自然光', '室内暖光', '室内白光', '近距离侧光', '均匀正面光', '室外'],
     },
   };
@@ -1574,7 +1581,8 @@
       '</div>' +
       (st.adding
         ? '<div class="tag-new">' +
-            '<input type="text" placeholder="新标签，比如「泪沟」">' +
+            '<input type="text" placeholder="' +
+              esc(TAG_SETS[setKey].ph || '新标签') + '">' +
             '<button type="button" class="more-toggle" data-tsave="1">加上</button>' +
           '</div>'
         : '');
@@ -1899,19 +1907,22 @@
   function openBodyEditor(anchor, editId) {
     if (document.getElementById('bd-edit')) return;
     var cur = editId ? bodyList().filter(function (x) { return x.id === editId; })[0] : null;
-    var level = (cur && cur.level) || '';
+    var sel = { what: (cur && cur.what) || '', level: (cur && cur.level) || '' };
 
+    /* 标签点了就是选了。
+       原来是「点标签 → 同样几个字出现在下面的输入框里 → 还能再改」——
+       同一件事在屏幕上写两遍，多出来那个框只让人犹豫以哪个为准。
+       缺哪一项就点 ＋ 加进来，下次就在这排里了。产品那边早就是这么定的。 */
     var box = el(
       '<div class="inline-edit" id="bd-edit">' +
+        '<div class="tiny ie-lab" style="margin-top:0">哪儿不舒服 / 什么情况</div>' +
         '<div id="bd-pick"></div>' +
-        '<input type="text" id="bd-what" placeholder="哪儿不舒服 / 什么情况（点上面或直接写）" ' +
-          'style="margin-top:8px"' +
-          (cur && cur.what ? ' value="' + esc(cur.what) + '"' : '') + '>' +
-        '<div class="pick" id="bd-lv" style="margin-top:8px">' + BODY_LEVELS.map(function (l) {
-          return '<button type="button" class="pchip vsub' + (level === l.k ? ' on' : '') +
+        '<div class="tiny ie-lab">程度（不选也行）</div>' +
+        '<div class="pick" id="bd-lv">' + BODY_LEVELS.map(function (l) {
+          return '<button type="button" class="pchip vsub' + (sel.level === l.k ? ' on' : '') +
             '" data-bdlv="' + l.k + '">' + esc(l.label) + '</button>';
         }).join('') + '</div>' +
-        '<div class="w-form" style="margin-top:8px">' +
+        '<div class="w-form" style="margin-top:12px">' +
           '<input type="date" id="bd-date" value="' +
             (cur ? esc((cur.at || '').slice(0, 10)) : todayISO()) + '">' +
         '</div>' +
@@ -1925,34 +1936,35 @@
     );
     anchor.insertAdjacentElement('afterend', box);
 
-    var whatIn = box.querySelector('#bd-what');
-    // 点常见项直接填进输入框，填错了还能自己改 —— 比纯选项灵活
     mountTagRow(box.querySelector('#bd-pick'), 'body', {
-      isOn: function (k) { return whatIn.value.trim() === k; },
-      onPick: function (k) { whatIn.value = (whatIn.value.trim() === k) ? '' : k; },
+      isOn: function (k) { return sel.what === k; },
+      onPick: function (k) { sel.what = (sel.what === k) ? '' : k; },
+      // 库里被拿掉、但这条记录还写着的，也得亮着显示，否则改一下就丢了
+      extra: function () { return sel.what ? [sel.what] : []; },
+      onRename: function (map) { sel.what = map[sel.what] || sel.what; },
     });
+
     var lvHost = box.querySelector('#bd-lv');
     lvHost.addEventListener('click', function (ev) {
       var b = ev.target.closest('[data-bdlv]');
       if (!b) return;
       // 再点一下取消 —— 「姨妈来了」这种不是不舒服，不该被逼着选个程度
-      level = (level === b.dataset.bdlv) ? '' : b.dataset.bdlv;
+      sel.level = (sel.level === b.dataset.bdlv) ? '' : b.dataset.bdlv;
       $$('.pchip', lvHost).forEach(function (x) {
-        x.classList.toggle('on', x.dataset.bdlv === level);
+        x.classList.toggle('on', x.dataset.bdlv === sel.level);
       });
     });
 
     box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
-      var what = whatIn.value.trim();
-      if (!what) return toast('写一下哪儿不舒服', true);
+      if (!sel.what) return toast('先点一个，没有就点 ＋ 加进去', true);
       var date = box.querySelector('#bd-date').value || todayISO();
       var rec = {
         id: cur ? cur.id : 'bd' + Date.now().toString(36),
         // 存到分钟：一天里疼两回也分得清先后
         at: date + 'T' + (cur ? (cur.at || '').slice(11, 16) || '12:00' : nowLocal().slice(11, 16)),
-        what: what,
-        level: level || undefined,
+        what: sel.what,
+        level: sel.level || undefined,
         note: box.querySelector('#bd-note').value.trim() || undefined,
       };
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
@@ -1960,7 +1972,7 @@
       persistList('bodyLog',
         ((state.data && state.data.bodyLog) || [])
           .filter(function (x) { return x.id !== rec.id; }).concat([rec]),
-        '身体记录：' + what);
+        '身体记录：' + sel.what);
     });
   }
 
@@ -2487,13 +2499,13 @@
       ? procList().filter(function (x) { return procKey(x) === editKey; })[0]
       : null;
 
+    var sel = { name: (cur && cur.name) || '' };
+
     var box = el(
       '<div class="inline-edit" id="pc-edit">' +
+        '<div class="tiny ie-lab" style="margin-top:0">做了什么</div>' +
         '<div id="pc-pick"></div>' +
-        '<input type="text" id="pc-name" placeholder="做了什么（点上面或直接写）" ' +
-          'style="margin-top:8px"' +
-          (cur && cur.name ? ' value="' + esc(cur.name) + '"' : '') + '>' +
-        '<div class="w-form" style="margin-top:8px">' +
+        '<div class="w-form" style="margin-top:12px">' +
           '<input type="date" id="pc-date" value="' +
             (cur && cur.date ? esc(cur.date) : todayISO()) + '">' +
         '</div>' +
@@ -2507,20 +2519,20 @@
     );
     anchor.insertAdjacentElement('afterend', box);
 
-    var nameIn = box.querySelector('#pc-name');
     mountTagRow(box.querySelector('#pc-pick'), 'proc', {
-      isOn: function (k) { return nameIn.value.trim() === k; },
-      onPick: function (k) { nameIn.value = (nameIn.value.trim() === k) ? '' : k; },
+      isOn: function (k) { return sel.name === k; },
+      onPick: function (k) { sel.name = (sel.name === k) ? '' : k; },
+      extra: function () { return sel.name ? [sel.name] : []; },
+      onRename: function (map) { sel.name = map[sel.name] || sel.name; },
     });
 
     box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
-      var name = nameIn.value.trim();
-      if (!name) return toast('写一下做了什么', true);
+      if (!sel.name) return toast('先点一个项目，没有就点 ＋ 加进去', true);
       var rec = {
         id: (cur && cur.id) || 'pc' + Date.now().toString(36),
         date: box.querySelector('#pc-date').value || todayISO(),
-        name: name,
+        name: sel.name,
         note: box.querySelector('#pc-note').value.trim() || undefined,
       };
       var old = cur ? editKey : null;
@@ -2530,7 +2542,7 @@
       persistList('procedures',
         procList().filter(function (x) { return procKey(x) !== old; }).concat([rec])
           .sort(function (a, b) { return (a.date || '') < (b.date || '') ? -1 : 1; }),
-        '医美记录：' + name);
+        '医美记录：' + sel.name);
     });
   }
 
@@ -4537,10 +4549,6 @@
     { k: 'size',     label: '规格',   type: 'text',   ph: '如 50ml / 30g' },
     { k: 'variants', label: '款式/色号', type: 'text', ph: '顿号分隔，如 积雪草、依克多因' },
     { k: 'spec',     label: '成分/参数', type: 'text', ph: '如 SPF50+ PA++++' },
-    /* 成分表和上面的 spec 不是一回事：spec 是一句话参数（SPF50+ PA++++），
-       这里是整张成分表，几十项。分开存 —— 一个字段两种用法迟早打架。 */
-    { k: 'ingredients', label: '成分表', type: 'textarea',
-      ph: '抄包装或官方客服给的全表，顿号分隔' },
     { k: 'start',    label: '购买/开始', type: 'date' },
     { k: 'end',      label: '停用',   type: 'date' },
     { k: 'note',     label: '备注',   type: 'text' },
@@ -4580,31 +4588,15 @@
       if (f.k === 'spec' && buysAll.length) return false;   // 已并进购买记录那一行
       return true;
     }).map(function (f) {
-      /* 成分表几十项，平铺开会把详情里其它字段全挤没。
-         用原生 details 折起来 —— 不用写 JS，展开状态浏览器自己管。 */
-      if (f.type === 'textarea') {
-        var val = String(p[f.k]);
-        var cnt = val.split(/[、,，;；\n]/).filter(function (x) { return x.trim(); }).length;
-        return '<details class="pd-fold"><summary>' + esc(f.label) +
-          '<i>' + cnt + ' 项</i></summary><div>' + esc(val) + '</div></details>';
-      }
       return '<div class="pd-row read"><span>' + esc(f.label) + '</span>' +
         '<b>' + esc(String(p[f.k])) + (f.unit || '') + '</b></div>';
     }).join('');
 
     var editRows = PROD_FIELDS.map(function (f) {
-      var val = esc(p[f.k] == null ? '' : p[f.k]);
-      /* textarea 单独走一支：成分表塞进一行输入框根本改不了。
-         标签改成占一整行，输入区才有宽度。 */
-      if (f.type === 'textarea') {
-        return '<label class="pd-row col"><span>' + esc(f.label) + '</span>' +
-          '<textarea data-f="' + f.k + '" rows="5"' +
-          (f.ph ? ' placeholder="' + esc(f.ph) + '"' : '') + '>' + val + '</textarea></label>';
-      }
       return '<label class="pd-row"><span>' + esc(f.label) + '</span>' +
         '<input type="' + f.type + '" data-f="' + f.k + '" ' +
         (f.ph ? 'placeholder="' + esc(f.ph) + '" ' : '') +
-        'value="' + val + '">' +
+        'value="' + esc(p[f.k] == null ? '' : p[f.k]) + '">' +
         (f.unit ? '<i>' + f.unit + '</i>' : '') + '</label>';
     }).join('');
 
