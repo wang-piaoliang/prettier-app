@@ -26,6 +26,7 @@
     tree: {},        // 路径 → blob sha，取照片用
     view: 'timeline',
     draft: null,
+    tagFilter: null,   // 时间线上按标签筛的时候，筛的是哪个
   };
 
   /* ================= 工具 ================= */
@@ -447,8 +448,12 @@
     if (e.ai) pills.push('<span class="pill accent">AI</span>');
     if (e._pending) pills.push('<span class="pill ok">上传中</span>');
 
+    /* 标签一直是算出来却没画出去的 —— 记了等于没记。
+       现在跟分数排在一起，点一下就只看这一处的记录。 */
     var tags = (e.tags || []).map(function (t) {
-      return '<span class="pill accent">' + esc(t) + '</span>';
+      return '<button type="button" class="pill accent tag-pill' +
+        (state.tagFilter === t ? ' on' : '') + '" data-tagpick="' + esc(t) + '">' +
+        esc(t) + '</button>';
     }).join('');
 
     var prod = productsHTML(e);
@@ -467,7 +472,7 @@
           ? '<span class="entry-time"><span class="slot-name">' + esc(SLOT[slotOf(e)] || '') +
             '</span>' + fmtTime(e.at) + '</span>'
           : '') +
-        '<div class="meta">' + pills.join('') + '</div>' +
+        '<div class="meta">' + pills.join('') + tags + '</div>' +
         '<div class="entry-act">' +
           '<button data-del="' + esc(e.id) + '" aria-label="删除">🗑</button>' +
           '<button data-edit="' + esc(e.id) + '" aria-label="编辑">✎</button>' +
@@ -680,11 +685,29 @@
   var collapsedDays = {};      // date -> true 表示收起
   var allCollapsed = false;
 
+  /* 正在按哪个标签筛。挂在时间线顶上，点「看全部」撤掉。 */
+  function tagBar() {
+    if (!state.tagFilter) return '';
+    return '<div class="tag-bar">' +
+      '<span class="pill accent">' + esc(state.tagFilter) + '</span>' +
+      '<button class="more-toggle" id="tagFilterOff" type="button">看全部</button>' +
+    '</div>';
+  }
+
   function renderTimeline() {
     var host = $('#view-timeline');
     var list = newestFirst((state.data && state.data.entries) || []);
+    if (state.tagFilter) {
+      list = list.filter(function (e) {
+        return (e.tags || []).indexOf(state.tagFilter) >= 0;
+      });
+    }
     if (!list.length) {
-      host.innerHTML = '<div class="empty"><strong>还没有记录</strong>点下面的「记一条」开始。</div>';
+      host.innerHTML = state.tagFilter
+        ? tagBar() + '<div class="empty"><strong>没有带「' + esc(state.tagFilter) +
+          '」的记录</strong>记一条的时候点上这个标签就有了。</div>'
+        : '<div class="empty"><strong>还没有记录</strong>点下面的「记一条」开始。</div>';
+      if (!host.dataset.bound) { host.dataset.bound = '1'; bindTimeline(host); }
       return;
     }
 
@@ -698,7 +721,7 @@
 
     var notes = (state.data && state.data.dayNotes) || {};
 
-    host.innerHTML =
+    host.innerHTML = tagBar() +
 
       days.map(function (d) {
         var closed = collapsedDays[d.date];
@@ -747,6 +770,18 @@
 
   function bindTimeline(host) {
     host.addEventListener('click', function (ev) {
+      /* 标签要排在最前面：它长在 .entry-head 里，
+         让下面的折叠先接到的话，点标签只会把这条收起来。 */
+      var tg = ev.target.closest('[data-tagpick]');
+      if (tg) {
+        state.tagFilter = state.tagFilter === tg.dataset.tagpick ? null : tg.dataset.tagpick;
+        window.scrollTo(0, 0);
+        return redrawTimeline();
+      }
+      if (ev.target.closest('#tagFilterOff')) {
+        state.tagFilter = null;
+        return redrawTimeline();
+      }
       var ad = ev.target.closest('[data-add-day]');
       if (ad) return startEntryOn(ad.dataset.addDay);
       var f = ev.target.closest('[data-fold]');
@@ -1146,7 +1181,7 @@
     /* 顺序按看的频率来：体重每天称、护肤记录常写、
        「在跟的问题」是长期背景，放最后。 */
     host.innerHTML =
-      weightHTML() + workoutHTML() + careHTML() + memoHTML() +
+      weightHTML() + workoutHTML() + bodyHTML() + careHTML() + memoHTML() +
       foldSection('ml', '在跟的问题', ml.map(card).join('')) +
       procedureHTML() + mapHTML();
 
@@ -1176,12 +1211,30 @@
         var wkD = ev.target.closest('[data-wk-del]');
         if (wkD) return deleteWorkout(wkD.dataset.wkDel);
 
+        var aBd = ev.target.closest('#addBody');
+        if (aBd) return openBodyEditor(aBd.closest('.care-add'));
+        var bdE = ev.target.closest('[data-bd-edit]');
+        if (bdE) return openBodyEditor(bdE.closest('.care-row'), bdE.dataset.bdEdit);
+        var bdD = ev.target.closest('[data-bd-del]');
+        if (bdD) return deleteBody(bdD.dataset.bdDel);
+
         var aMe = ev.target.closest('#addMemo');
         if (aMe) return openMemoEditor(aMe.closest('.care-add'));
+        var aTd = ev.target.closest('#addTodo');
+        if (aTd) return openMemoEditor(aTd.closest('.care-add'), null, true);
+        var meC = ev.target.closest('[data-memo-check]');
+        if (meC) return toggleMemoDone(meC.dataset.memoCheck);
         var meE = ev.target.closest('[data-memo-edit]');
         if (meE) return openMemoEditor(meE.closest('.care-row'), meE.dataset.memoEdit);
         var meD = ev.target.closest('[data-memo-del]');
         if (meD) return deleteMemo(meD.dataset.memoDel);
+
+        var aPc = ev.target.closest('#addProc');
+        if (aPc) return openProcEditor(aPc.closest('.care-add'), null);
+        var pcE = ev.target.closest('[data-pc-edit]');
+        if (pcE) return openProcEditor(pcE.closest('.care-row'), pcE.dataset.pcEdit);
+        var pcD = ev.target.closest('[data-pc-del]');
+        if (pcD) return deleteProc(pcD.dataset.pcDel);
 
         var mf = ev.target.closest('[data-mlfold]');
         if (mf) {
@@ -1369,20 +1422,289 @@
     });
   }
 
+  /* ================= 标签库 =================
+     这些一排排的小标签，原来是写死在代码里的常量 ——
+     想加一个「泪沟」得来找我改代码。现在整块存进 settings.json，
+     在哪儿用就在哪儿加、改名、拿掉。
+
+     两条规矩：
+       · 改名连着已有的记录一起改。否则同一处会裂成两个名字，筛的时候漏一半。
+       · 拿掉只是这排里不再出现，已经记下的记录一个字都不动 ——
+         标签是给以后挑的，不是用来抹掉过去的。 */
+
+  var TAG_SETS = {
+    zone: {
+      label: '部位',
+      def: ['下巴', '泪沟', '黑头', '脸颊', '鼻翼', '额头', '法令纹', '眼下', '唇周', '痘印'],
+    },
+    /* 运动这组带 key：记录里存的是 key，所以改名字不用动老记录 */
+    sport: {
+      label: '运动',
+      keyed: true,
+      def: [
+        { k: 'swim', label: '游泳' },
+        { k: 'gym', label: '健身' },
+        { k: 'run', label: '跑步' },
+        { k: 'climb', label: '攀岩' },
+        { k: 'yoga', label: '瑜伽' },
+        { k: 'walk', label: '走路' },
+        { k: 'other', label: '其他' },
+      ],
+    },
+    gym: { label: '健身部位', def: ['背', '臀', '上肢', '下肢', '核心', '全身'] },
+    body: {
+      label: '身体',
+      def: ['姨妈', '睡不好', '头疼', '胃疼', '腰酸', '肩颈',
+            '嗓子疼', '感冒', '过敏', '乏力', '水肿', '便秘'],
+    },
+    proc: {
+      label: '医美项目',
+      def: ['光子嫩肤', '超皮秒', '热玛吉', '超声炮', '水光针',
+            '肉毒素', '玻尿酸', '点阵激光', '果酸焕肤', '小气泡'],
+    },
+    mkstate: {
+      label: '持妆状态',
+      def: ['泛油光', '斑驳', '卡粉', '脱妆', '暗沉', '干纹', '完好'],
+    },
+    light: {
+      label: '光线',
+      def: ['窗边自然光', '室内暖光', '室内白光', '近距离侧光', '均匀正面光', '室外'],
+    },
+  };
+
+  /* 对外一律是 [{k, label}]。不带 key 的那几组，k 就是它自己的名字 ——
+     组件不用关心哪组带 key，存的时候再变回去。 */
+  function tagItems(setKey) {
+    var set = TAG_SETS[setKey] || { def: [] };
+    var saved = state.data && state.data.tags && state.data.tags[setKey];
+    var raw = (saved && saved.length) ? saved : set.def;
+    return raw.map(function (t) {
+      return typeof t === 'string'
+        ? { k: t, label: t }
+        : { k: t.k || t.key, label: t.label || t.k || t.key };
+    });
+  }
+
+  function tagLabel(setKey, k) {
+    var hit = tagItems(setKey).filter(function (t) { return t.k === k; })[0];
+    return hit ? hit.label : (k || '');
+  }
+
+  /* 存一组标签。顺带把改名铺到老记录上 ——
+     健身部位和整份 settings 一起提交，免得两次写打架。 */
+  function saveTagSet(setKey, items, renames) {
+    var all = Object.assign({}, (state.data && state.data.tags) || {});
+    all[setKey] = TAG_SETS[setKey].keyed
+      ? items.map(function (t) { return { k: t.k, label: t.label }; })
+      : items.map(function (t) { return t.label; });
+
+    var map = {};
+    (renames || []).forEach(function (r) { map[r.from] = r.to; });
+    var swap = function (arr) {
+      return (arr || []).map(function (x) { return map[x] || x; });
+    };
+    var hasRename = Object.keys(map).length > 0;
+
+    var ws = null;
+    if (setKey === 'gym' && hasRename) {
+      ws = ((state.data && state.data.workouts) || []).map(function (w) {
+        return w.parts ? Object.assign({}, w, { parts: swap(w.parts) }) : w;
+      });
+    }
+
+    if (state.data) {
+      state.data.tags = all;              // 先本地生效，界面立刻跟上
+      if (ws) state.data.workouts = ws;
+    }
+
+    var p = GitStore.updateJSON('settings.json', function (remote) {
+      var base = remote || {};
+      base.tags = all;
+      if (ws) base.workouts = ws;
+      return base;
+    }, '标签 · ' + TAG_SETS[setKey].label);
+
+    // 记录里存的是标签原文的那两组，得回头把 entries.json 也改了
+    var field = setKey === 'zone' ? 'tags' : (setKey === 'mkstate' ? 'makeupState' : null);
+    if (field && hasRename) {
+      ((state.data && state.data.entries) || []).forEach(function (e) {
+        if (e[field]) e[field] = swap(e[field]);
+      });
+      p = p.then(function () {
+        return GitStore.updateJSON('entries.json', function (remote) {
+          return (remote || []).map(function (e) {
+            if (!e[field]) return e;
+            var n = Object.assign({}, e);
+            n[field] = swap(e[field]);
+            return n;
+          });
+        }, '标签改名 · ' + Object.keys(map).map(function (k) {
+          return k + '→' + map[k];
+        }).join('、'));
+      });
+    }
+    return p.catch(function (e) { toast('标签没存上：' + (e.message || e), true); });
+  }
+
+  /* 一排能自己加、改名、拿掉的小标签。
+     谁要用就给一个容器和一份配置，剩下的它自己管。
+     cfg: { isOn(k), onPick(k), onRename(map), extra() -> 选中但库里没有的, sub }
+
+     为什么不做成一个「设置里的标签管理页」：想加标签的时刻永远是
+     正在记录、发现没这一项的时刻，跑去设置页再回来，这条记录就记不完了。 */
+  function mountTagRow(host, setKey, cfg) {
+    var st = { manage: false, adding: false, rows: null, focusLast: false };
+
+    function chipsHTML() {
+      var items = tagItems(setKey);
+      var known = {};
+      items.forEach(function (t) { known[t.k] = 1; });
+      // 库里没有、但这条记录上有的（早先手打的、AI 填的）也得露出来，
+      // 否则它明明记着、界面上却一个都看不见
+      var extra = (cfg.extra ? cfg.extra() : []).filter(function (x) { return !known[x]; });
+      var chip = function (k, label, on) {
+        return '<button type="button" class="pchip' + (cfg.sub ? ' vsub' : '') +
+          (on ? ' on' : '') + '" data-tk="' + esc(k) + '">' + esc(label) + '</button>';
+      };
+      return '<div class="pick tag-row">' +
+        items.map(function (t) { return chip(t.k, t.label, cfg.isOn(t.k)); }).join('') +
+        extra.map(function (x) { return chip(x, x, true); }).join('') +
+        '<button type="button" class="pchip tag-op" data-tadd="1">＋</button>' +
+        '<button type="button" class="pchip tag-op" data-tmgr="1">管理</button>' +
+      '</div>' +
+      (st.adding
+        ? '<div class="tag-new">' +
+            '<input type="text" placeholder="新标签，比如「泪沟」">' +
+            '<button type="button" class="more-toggle" data-tsave="1">加上</button>' +
+          '</div>'
+        : '');
+    }
+
+    function mgrHTML() {
+      return '<div class="tag-mgr">' +
+        '<div class="tiny">改名字直接在框里改，已有的记录跟着一起改；' +
+          '× 是从这排里拿掉，记过的一个字都不动。</div>' +
+        st.rows.map(function (t, i) {
+          return '<div class="tm-row">' +
+            '<input type="text" data-ti="' + i + '" value="' + esc(t.label) + '">' +
+            '<button type="button" class="rv-edit" data-tdel="' + i + '" aria-label="拿掉">×</button>' +
+          '</div>';
+        }).join('') +
+        '<div class="care-add" style="margin-top:10px">' +
+          '<button type="button" class="more-toggle" data-tadd2="1">＋ 加一个</button>' +
+          '<button type="button" class="more-toggle" data-tdone="1">完成</button>' +
+        '</div>' +
+      '</div>';
+    }
+
+    function draw() {
+      host.innerHTML = st.manage ? mgrHTML() : chipsHTML();
+      if (st.manage && st.focusLast) {
+        var all = $$('[data-ti]', host);
+        if (all.length) all[all.length - 1].focus();
+        st.focusLast = false;
+      }
+      if (!st.manage && st.adding) {
+        var i = $('.tag-new input', host);
+        if (i) i.focus();
+      }
+    }
+
+    // 管理模式下先把框里改过的字收回来，再做增删，免得一重画就白改了
+    function syncRows() {
+      $$('[data-ti]', host).forEach(function (inp) {
+        var row = st.rows[Number(inp.dataset.ti)];
+        if (row) row.label = inp.value.trim();
+      });
+    }
+
+    function apply(exit) {
+      var store = tagItems(setKey);
+      var byKey = {};
+      store.forEach(function (t) { byKey[t.k] = t.label; });
+      var renames = [];
+      var items = st.rows.filter(function (t) { return t.label; }).map(function (t) {
+        if (t.k && byKey[t.k] !== undefined && byKey[t.k] !== t.label) {
+          renames.push({ from: byKey[t.k], to: t.label });
+        }
+        return { k: (TAG_SETS[setKey].keyed && t.k) ? t.k : (t.k || t.label), label: t.label };
+      });
+      if (!TAG_SETS[setKey].keyed) {
+        items = items.map(function (t) { return { k: t.label, label: t.label }; });
+      }
+      saveTagSet(setKey, items, renames);
+      if (renames.length && cfg.onRename) {
+        var map = {};
+        renames.forEach(function (r) { map[r.from] = r.to; });
+        cfg.onRename(map);
+      }
+      if (exit) { st.manage = false; st.rows = null; }
+      else { st.rows = tagItems(setKey); }
+      draw();
+    }
+
+    function addNew() {
+      var inp = $('.tag-new input', host);
+      var v = inp ? inp.value.trim() : '';
+      st.adding = false;
+      if (!v) return draw();
+      var items = tagItems(setKey);
+      if (items.filter(function (t) { return t.label === v; }).length) {
+        draw();
+        return toast('已经有「' + v + '」了');
+      }
+      var k = TAG_SETS[setKey].keyed ? 'tg' + Date.now().toString(36) : v;
+      items.push({ k: k, label: v });
+      saveTagSet(setKey, items, []);
+      if (cfg.onPick) cfg.onPick(k);      // 加它就是为了这次要用，顺手选上
+      draw();
+    }
+
+    host.addEventListener('click', function (ev) {
+      var t = ev.target.closest('[data-tk]');
+      if (t) { if (cfg.onPick) cfg.onPick(t.dataset.tk); return draw(); }
+      if (ev.target.closest('[data-tadd]')) { st.adding = !st.adding; return draw(); }
+      if (ev.target.closest('[data-tsave]')) return addNew();
+      if (ev.target.closest('[data-tmgr]')) {
+        st.manage = true; st.adding = false; st.rows = tagItems(setKey);
+        return draw();
+      }
+      var del = ev.target.closest('[data-tdel]');
+      if (del) {
+        syncRows();
+        var gone = st.rows[Number(del.dataset.tdel)];
+        if (!gone || !confirm('把「' + gone.label + '」从这排里拿掉？已经记下的记录不动。')) return;
+        st.rows.splice(Number(del.dataset.tdel), 1);
+        return apply(false);
+      }
+      if (ev.target.closest('[data-tadd2]')) {
+        syncRows();
+        st.rows.push({ k: '', label: '' });
+        st.focusLast = true;
+        return draw();
+      }
+      if (ev.target.closest('[data-tdone]')) { syncRows(); return apply(true); }
+    });
+
+    // 回车就当点了「加上」——手机上收键盘再找按钮太绕
+    host.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Enter') return;
+      if (ev.target.closest('.tag-new')) { ev.preventDefault(); return addNew(); }
+      if (st.manage && ev.target.dataset && ev.target.dataset.ti !== undefined) {
+        ev.preventDefault();
+        ev.target.blur();
+        syncRows();
+        apply(false);
+      }
+    });
+
+    draw();
+  }
+
   /* ================= 运动 =================
      游泳、健身（练了哪几块）、时长。
      记下来是为了和皮肤对照 —— 出汗、作息、强度都会写在脸上。 */
 
-  var SPORTS = [
-    { key: 'swim', label: '游泳' },
-    { key: 'gym', label: '健身' },
-    { key: 'run', label: '跑步' },
-    { key: 'climb', label: '攀岩' },
-    { key: 'yoga', label: '瑜伽' },
-    { key: 'walk', label: '走路' },
-    { key: 'other', label: '其他' },
-  ];
-  var BODY_PARTS = ['背', '臀', '上肢', '下肢', '核心', '全身'];
 
   function workoutList() {
     return ((state.data && state.data.workouts) || []).slice()
@@ -1390,8 +1712,8 @@
   }
 
   function sportLabel(k) {
-    var s = SPORTS.filter(function (x) { return x.key === k; })[0];
-    return s ? s.label : (k || '运动');
+    // 删掉的运动、老记录里的 key，都还得显示得出来
+    return tagLabel('sport', k) || k || '运动';
   }
 
   function workoutHTML() {
@@ -1446,29 +1768,19 @@
       mins: (cur && cur.mins) || 60,
     };
 
-    var body = function () {
-      return '<div class="pick">' + SPORTS.map(function (s) {
-          return '<button type="button" class="pchip' + (sel.type === s.key ? ' on' : '') +
-            '" data-wtype="' + s.key + '">' + esc(s.label) + '</button>';
-        }).join('') + '</div>' +
-        (sel.type === 'gym'
-          ? '<div class="pick" style="margin-top:6px">' + BODY_PARTS.map(function (p) {
-              return '<button type="button" class="pchip vsub' +
-                (sel.parts.indexOf(p) >= 0 ? ' on' : '') + '" data-wpart="' + esc(p) + '">' +
-                esc(p) + '</button>';
-            }).join('') + '</div>'
-          : '') +
-        '<div class="score-row" style="margin-top:10px">' +
-          '<span class="score-val">' + sel.mins + '<i style="font-size:11px"> 分</i></span>' +
-          '<input type="range" id="wk-mins" min="10" max="180" step="5" value="' + sel.mins + '">' +
-        '</div>';
-    };
-
+    /* 类型、部位、时长各占一块。
+       原来这三样挤在一个 #wk-body 里，点一下类型就把整块重画 ——
+       标签行自己管着「管理 / 加一个」的开合状态，一重画就全没了。 */
     var box = el(
       '<div class="inline-edit" id="wk-edit">' +
         '<input type="date" id="wk-date" value="' +
           (cur ? esc((cur.at || '').slice(0, 10)) : todayISO()) + '">' +
-        '<div id="wk-body" style="margin-top:8px">' + body() + '</div>' +
+        '<div id="wk-type" style="margin-top:8px"></div>' +
+        '<div id="wk-parts" style="margin-top:6px"></div>' +
+        '<div class="score-row" style="margin-top:10px">' +
+          '<span class="score-val">' + sel.mins + '<i style="font-size:11px"> 分</i></span>' +
+          '<input type="range" id="wk-mins" min="10" max="180" step="5" value="' + sel.mins + '">' +
+        '</div>' +
         '<textarea id="wk-note" placeholder="备注（可留空）" style="margin-top:8px">' +
           esc((cur && cur.note) || '') + '</textarea>' +
         '<div class="ie-act">' +
@@ -1479,27 +1791,33 @@
     );
     anchor.replaceWith ? anchor.insertAdjacentElement('afterend', box) : anchor.appendChild(box);
 
-    var host = box.querySelector('#wk-body');
-    host.addEventListener('click', function (ev) {
-      var t = ev.target.closest('[data-wtype]');
-      if (t) { sel.type = t.dataset.wtype; host.innerHTML = body(); bindMins(); return; }
-      var p = ev.target.closest('[data-wpart]');
-      if (p) {
-        var v = p.dataset.wpart, at = sel.parts.indexOf(v);
-        if (at >= 0) sel.parts.splice(at, 1); else sel.parts.push(v);
-        host.innerHTML = body();
-        bindMins();
-      }
-    });
-    var bindMins = function () {
-      var r = box.querySelector('#wk-mins');
-      if (!r) return;
-      r.addEventListener('input', function () {
-        sel.mins = Number(this.value);
-        box.querySelector('.score-val').innerHTML = sel.mins + '<i style="font-size:11px"> 分</i>';
+    var partsHost = box.querySelector('#wk-parts');
+    var drawParts = function () {
+      // 只有健身才分部位；换成游泳这一排就该收起来
+      if (sel.type !== 'gym') { partsHost.innerHTML = ''; return; }
+      mountTagRow(partsHost, 'gym', {
+        sub: true,
+        isOn: function (k) { return sel.parts.indexOf(k) >= 0; },
+        onPick: function (k) {
+          var at = sel.parts.indexOf(k);
+          if (at >= 0) sel.parts.splice(at, 1); else sel.parts.push(k);
+        },
+        extra: function () { return sel.parts.slice(); },
+        onRename: function (map) {
+          sel.parts = sel.parts.map(function (x) { return map[x] || x; });
+        },
       });
     };
-    bindMins();
+    mountTagRow(box.querySelector('#wk-type'), 'sport', {
+      isOn: function (k) { return sel.type === k; },
+      onPick: function (k) { sel.type = k; drawParts(); },
+    });
+    drawParts();
+
+    box.querySelector('#wk-mins').addEventListener('input', function () {
+      sel.mins = Number(this.value);
+      box.querySelector('.score-val').innerHTML = sel.mins + '<i style="font-size:11px"> 分</i>';
+    });
 
     box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
@@ -1531,42 +1849,194 @@
       '运动：删掉一条');
   }
 
+  /* ================= 身体记录 =================
+     哪里不舒服、身体什么情况。单独一块，不并进护肤记录 ——
+     那边回答的是「脸上的变化从哪来」，这边回答的是「人怎么样」。
+     两件事混在一个列表里，翻的时候谁也看不清。 */
+
+  /* 程度不用 0–5 的滑条。这份档案里分数一律「越高越好」，
+     而不舒服是越重越糟，同一个控件两套读法，迟早看反。 */
+  var BODY_LEVELS = [
+    { k: 'mild', label: '轻', pill: '' },
+    { k: 'mid', label: '中', pill: 'ok' },
+    { k: 'bad', label: '重', pill: 'watch' },
+  ];
+
+  function bodyLevel(k) {
+    return BODY_LEVELS.filter(function (x) { return x.k === k; })[0] || null;
+  }
+
+  function bodyList() {
+    return ((state.data && state.data.bodyLog) || []).slice()
+      .sort(function (x, y) { return (x.at || '') < (y.at || '') ? 1 : -1; });
+  }
+
+  function bodyHTML() {
+    var rows = bodyList().map(function (b) {
+      var lv = bodyLevel(b.level);
+      return '<div class="care-row" data-bdid="' + esc(b.id) + '">' +
+        '<div class="cr-top">' +
+          '<b>' + esc(fmtDate((b.at || '').slice(0, 10))) + '</b>' +
+          '<span class="care-what">' + esc(b.what || '') + '</span>' +
+          (lv ? '<span class="pill ' + lv.pill + '">' + esc(lv.label) + '</span>' : '') +
+          '<button class="rv-edit" data-bd-edit="' + esc(b.id) + '" aria-label="改">✎</button>' +
+          '<button class="rv-edit" data-bd-del="' + esc(b.id) + '" aria-label="删">×</button>' +
+        '</div>' +
+        (b.note ? '<div class="cr-note">' + esc(b.note) + '</div>' : '') +
+      '</div>';
+    });
+
+    return foldSection('body', '身体记录', '<div class="card">' +
+        '<div class="care-add">' +
+          '<button class="more-toggle" id="addBody" type="button">＋ 记一条</button>' +
+        '</div>' +
+        (rows.length ? '<div class="w-list">' + limitRows('body', rows) + '</div>'
+                     : '<div class="tiny">哪儿不舒服、身体什么情况，记在这儿。' +
+                       '睡不好、姨妈、感冒最后都会写在脸上。</div>') +
+      '</div>');
+  }
+
+  function openBodyEditor(anchor, editId) {
+    if (document.getElementById('bd-edit')) return;
+    var cur = editId ? bodyList().filter(function (x) { return x.id === editId; })[0] : null;
+    var level = (cur && cur.level) || '';
+
+    var box = el(
+      '<div class="inline-edit" id="bd-edit">' +
+        '<div id="bd-pick"></div>' +
+        '<input type="text" id="bd-what" placeholder="哪儿不舒服 / 什么情况（点上面或直接写）" ' +
+          'style="margin-top:8px"' +
+          (cur && cur.what ? ' value="' + esc(cur.what) + '"' : '') + '>' +
+        '<div class="pick" id="bd-lv" style="margin-top:8px">' + BODY_LEVELS.map(function (l) {
+          return '<button type="button" class="pchip vsub' + (level === l.k ? ' on' : '') +
+            '" data-bdlv="' + l.k + '">' + esc(l.label) + '</button>';
+        }).join('') + '</div>' +
+        '<div class="w-form" style="margin-top:8px">' +
+          '<input type="date" id="bd-date" value="' +
+            (cur ? esc((cur.at || '').slice(0, 10)) : todayISO()) + '">' +
+        '</div>' +
+        '<textarea id="bd-note" placeholder="怎么个不舒服法、吃了什么药、后来怎么样" ' +
+          'style="margin-top:8px">' + esc((cur && cur.note) || '') + '</textarea>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">' + (cur ? '保存' : '记下') + '</button>' +
+        '</div>' +
+      '</div>'
+    );
+    anchor.insertAdjacentElement('afterend', box);
+
+    var whatIn = box.querySelector('#bd-what');
+    // 点常见项直接填进输入框，填错了还能自己改 —— 比纯选项灵活
+    mountTagRow(box.querySelector('#bd-pick'), 'body', {
+      isOn: function (k) { return whatIn.value.trim() === k; },
+      onPick: function (k) { whatIn.value = (whatIn.value.trim() === k) ? '' : k; },
+    });
+    var lvHost = box.querySelector('#bd-lv');
+    lvHost.addEventListener('click', function (ev) {
+      var b = ev.target.closest('[data-bdlv]');
+      if (!b) return;
+      // 再点一下取消 —— 「姨妈来了」这种不是不舒服，不该被逼着选个程度
+      level = (level === b.dataset.bdlv) ? '' : b.dataset.bdlv;
+      $$('.pchip', lvHost).forEach(function (x) {
+        x.classList.toggle('on', x.dataset.bdlv === level);
+      });
+    });
+
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var what = whatIn.value.trim();
+      if (!what) return toast('写一下哪儿不舒服', true);
+      var date = box.querySelector('#bd-date').value || todayISO();
+      var rec = {
+        id: cur ? cur.id : 'bd' + Date.now().toString(36),
+        // 存到分钟：一天里疼两回也分得清先后
+        at: date + 'T' + (cur ? (cur.at || '').slice(11, 16) || '12:00' : nowLocal().slice(11, 16)),
+        what: what,
+        level: level || undefined,
+        note: box.querySelector('#bd-note').value.trim() || undefined,
+      };
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      box.remove();
+      persistList('bodyLog',
+        ((state.data && state.data.bodyLog) || [])
+          .filter(function (x) { return x.id !== rec.id; }).concat([rec]),
+        '身体记录：' + what);
+    });
+  }
+
+  function deleteBody(id) {
+    var b = bodyList().filter(function (x) { return x.id === id; })[0];
+    if (!b || !confirm('删掉「' + (b.what || '') + '」这条？')) return;
+    persistList('bodyLog',
+      ((state.data && state.data.bodyLog) || []).filter(function (x) { return x.id !== id; }),
+      '身体记录：删掉一条');
+  }
+
   /* ================= 随手记 =================
-     想到什么记什么：用法、教训、下次注意。一条一条的，像备忘录。 */
+     想到什么记什么：用法、教训、下次注意。一条一条的，像备忘录。
+     其中一部分是「要做的事」—— 标成待办，做完勾掉，不用删。 */
 
   function noteList() {
-    return ((state.data && state.data.notes) || []).slice()
+    var all = ((state.data && state.data.notes) || []).slice()
       .sort(function (x, y) { return (x.at || '') < (y.at || '') ? 1 : -1; });
+    /* 没勾掉的待办浮到最前。
+       待办要是也按时间埋进去，过几天就被新记录挤到「还有 N 条」后面 ——
+       「剪剪刘海」就是这么忘掉的。勾掉之后它自己沉回时间里，还查得到。 */
+    var todo = all.filter(function (n) { return n.todo && !n.done; });
+    return todo.concat(all.filter(function (n) { return !(n.todo && !n.done); }));
+  }
+
+  function openTodos() {
+    return ((state.data && state.data.notes) || [])
+      .filter(function (n) { return n.todo && !n.done; }).length;
   }
 
   function memoHTML() {
     var rows = noteList().map(function (n) {
-      return '<div class="care-row" data-memo="' + esc(n.id) + '">' +
+      var done = !!(n.todo && n.done);
+      var text = n.todo
+        ? '<button class="todo-box' + (done ? ' on' : '') + '" type="button" ' +
+            'data-memo-check="' + esc(n.id) + '" aria-label="' +
+            (done ? '取消勾掉' : '勾掉') + '"></button>' +
+          '<span class="tt">' + esc(n.text || '') + '</span>'
+        : esc(n.text || '');
+      return '<div class="care-row' + (n.todo ? ' memo-todo' : '') + (done ? ' done' : '') +
+          '" data-memo="' + esc(n.id) + '">' +
         '<div class="cr-top">' +
           '<b>' + esc(fmtDate((n.at || '').slice(0, 10))) + '</b>' +
           '<span class="care-what"></span>' +
           '<button class="rv-edit" data-memo-edit="' + esc(n.id) + '" aria-label="改">✎</button>' +
           '<button class="rv-edit" data-memo-del="' + esc(n.id) + '" aria-label="删">×</button>' +
         '</div>' +
-        '<div class="cr-note memo-text">' + esc(n.text || '') + '</div>' +
+        '<div class="cr-note memo-text">' + text + '</div>' +
       '</div>';
     });
+    var open = openTodos();
 
     return foldSection('memo', '随手记', '<div class="card">' +
         '<div class="care-add">' +
           '<button class="more-toggle" id="addMemo" type="button">＋ 记一条</button>' +
+          '<button class="more-toggle" id="addTodo" type="button">＋ 记个待办</button>' +
         '</div>' +
         (rows.length ? '<div class="w-list">' + limitRows('memo', rows) + '</div>'
-                     : '<div class="tiny">想到什么记什么：用法、教训、下次注意。</div>') +
-      '</div>');
+                     : '<div class="tiny">想到什么记什么：用法、教训、下次注意。' +
+                       '要做的事记成待办，做完勾掉。</div>') +
+      '</div>', open ? open + ' 件待办' : 0);
   }
 
-  function openMemoEditor(anchor, editId) {
+  function openMemoEditor(anchor, editId, asTodo) {
     if (document.getElementById('memo-edit')) return;
     var cur = editId ? noteList().filter(function (x) { return x.id === editId; })[0] : null;
+    var isTodo = cur ? !!cur.todo : !!asTodo;
+    var ph = function (t) { return t ? '要做的事，例：剪刘海' : '随手记一条…'; };
+
     var box = el(
       '<div class="inline-edit" id="memo-edit">' +
-        '<textarea id="memo-text" placeholder="随手记一条…">' +
+        '<div class="pick" style="margin-bottom:8px">' +
+          '<button type="button" class="pchip' + (isTodo ? ' on' : '') + '" id="memo-todo">' +
+            '待办 · 做完勾掉</button>' +
+        '</div>' +
+        '<textarea id="memo-text" placeholder="' + ph(isTodo) + '">' +
           esc((cur && cur.text) || '') + '</textarea>' +
         '<div class="ie-act">' +
           '<button class="ie-cancel" type="button">取消</button>' +
@@ -1575,20 +2045,52 @@
       '</div>'
     );
     anchor.insertAdjacentElement('afterend', box);
-    box.querySelector('#memo-text').focus();
+
+    // 记着记着发现「这其实是件要做的事」，随时能翻过去，不用删了重记
+    var tBtn = box.querySelector('#memo-todo');
+    var ta = box.querySelector('#memo-text');
+    tBtn.addEventListener('click', function () {
+      isTodo = !isTodo;
+      tBtn.classList.toggle('on', isTodo);
+      ta.placeholder = ph(isTodo);
+    });
+
+    ta.focus();
     box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
-      var t = box.querySelector('#memo-text').value.trim();
+      var t = ta.value.trim();
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       box.remove();
       if (!t) return;
       var rec = { id: cur ? cur.id : 'me' + Date.now().toString(36),
                   at: cur ? cur.at : nowLocal(), text: t };
+      if (isTodo) {
+        rec.todo = true;
+        // 改一条已经勾掉的待办，别把勾弄丢了
+        if (cur && cur.done) { rec.done = true; rec.doneAt = cur.doneAt; }
+      }
       persistList('notes',
         ((state.data && state.data.notes) || [])
           .filter(function (x) { return x.id !== rec.id; }).concat([rec]),
-        '随手记');
+        isTodo ? '待办：' + t.slice(0, 12) : '随手记');
     });
+  }
+
+  /* 勾掉不是删掉 —— 做过什么本身也是记录，勾掉之后按时间沉下去，还翻得到。 */
+  function toggleMemoDone(id) {
+    var hit = null;
+    var list = ((state.data && state.data.notes) || []).map(function (n) {
+      if (n.id !== id) return n;
+      var m = Object.assign({}, n, { todo: true });
+      if (n.done) { delete m.done; delete m.doneAt; }
+      else { m.done = true; m.doneAt = nowLocal(); }
+      hit = m;
+      return m;
+    });
+    if (!hit) return;
+    if (hit.done && navigator.vibrate) navigator.vibrate(12);
+    persistList('notes', list,
+      (hit.done ? '待办：勾掉 ' : '待办：撤回 ') + String(hit.text || '').slice(0, 12));
   }
 
   function deleteMemo(id) {
@@ -1941,23 +2443,104 @@
     }).catch(function (e) { toast('没存上：' + (e.message || e), true); });
   }
 
+  /* ================= 医美记录 =================
+     做过什么、什么时候做的。和护肤记录分开 ——
+     一次热玛吉的影响按年算，混在每天敷面膜里根本翻不出来。 */
+
+  function procList() {
+    return ((state.data && state.data.procedures) || []).slice()
+      .sort(function (x, y) { return (x.date || '') < (y.date || '') ? 1 : -1; });
+  }
+
+  /* 早先手写进去的那几条没有 id，用「日期+名字」当身份。
+     不为了加两个按钮就去改已有的数据。 */
+  function procKey(p) { return p.id || ((p.date || '') + '|' + (p.name || '')); }
+
   function procedureHTML() {
-    var list = (state.data && state.data.procedures) || [];
-    if (!list.length) {
-      return '<div class="section-title">医美记录</div>' +
-        '<div class="empty">还没有记录。做过什么、什么时候做的，记在这里。</div>';
-    }
-    return '<div class="section-title">医美记录</div>' +
-      list.slice().reverse().map(function (p) {
-        return '<div class="card" style="margin-bottom:12px">' +
-          '<div class="entry-head" style="border:none;margin:0;padding:0">' +
-            '<span class="entry-date">' + fmtDate(p.date) + '</span>' +
-            '<span class="pill accent" style="margin-left:auto">' + esc(p.name) + '</span>' +
-          '</div>' +
-          (p.note ? '<div class="note" style="border:none;padding-top:8px">' +
-                    esc(p.note) + '</div>' : '') +
-        '</div>';
-      }).join('');
+    var rows = procList().map(function (p) {
+      var k = procKey(p);
+      return '<div class="care-row" data-pcid="' + esc(k) + '">' +
+        '<div class="cr-top">' +
+          '<b>' + esc(fmtDate(p.date)) + '</b>' +
+          '<span class="care-what">' + esc(p.name || '') + '</span>' +
+          '<button class="rv-edit" data-pc-edit="' + esc(k) + '" aria-label="改">✎</button>' +
+          '<button class="rv-edit" data-pc-del="' + esc(k) + '" aria-label="删">×</button>' +
+        '</div>' +
+        (p.note ? '<div class="cr-note">' + esc(p.note) + '</div>' : '') +
+      '</div>';
+    });
+
+    return foldSection('proc', '医美记录', '<div class="card">' +
+        '<div class="care-add">' +
+          '<button class="more-toggle" id="addProc" type="button">＋ 记一次</button>' +
+        '</div>' +
+        (rows.length ? '<div class="w-list">' + limitRows('proc', rows) + '</div>'
+                     : '<div class="tiny">做过什么、什么时候做的，记在这里。' +
+                       '哪家做的、恢复几天、效果怎么样写在备注里，' +
+                       '下次才知道值不值得再做。</div>') +
+      '</div>');
+  }
+
+  function openProcEditor(anchor, editKey) {
+    if (document.getElementById('pc-edit')) return;
+    var cur = editKey
+      ? procList().filter(function (x) { return procKey(x) === editKey; })[0]
+      : null;
+
+    var box = el(
+      '<div class="inline-edit" id="pc-edit">' +
+        '<div id="pc-pick"></div>' +
+        '<input type="text" id="pc-name" placeholder="做了什么（点上面或直接写）" ' +
+          'style="margin-top:8px"' +
+          (cur && cur.name ? ' value="' + esc(cur.name) + '"' : '') + '>' +
+        '<div class="w-form" style="margin-top:8px">' +
+          '<input type="date" id="pc-date" value="' +
+            (cur && cur.date ? esc(cur.date) : todayISO()) + '">' +
+        '</div>' +
+        '<textarea id="pc-note" placeholder="哪家做的、什么参数、恢复几天、效果怎么样" ' +
+          'style="margin-top:8px">' + esc((cur && cur.note) || '') + '</textarea>' +
+        '<div class="ie-act">' +
+          '<button class="ie-cancel" type="button">取消</button>' +
+          '<button class="ie-ok" type="button">' + (cur ? '保存' : '记下') + '</button>' +
+        '</div>' +
+      '</div>'
+    );
+    anchor.insertAdjacentElement('afterend', box);
+
+    var nameIn = box.querySelector('#pc-name');
+    mountTagRow(box.querySelector('#pc-pick'), 'proc', {
+      isOn: function (k) { return nameIn.value.trim() === k; },
+      onPick: function (k) { nameIn.value = (nameIn.value.trim() === k) ? '' : k; },
+    });
+
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var name = nameIn.value.trim();
+      if (!name) return toast('写一下做了什么', true);
+      var rec = {
+        id: (cur && cur.id) || 'pc' + Date.now().toString(36),
+        date: box.querySelector('#pc-date').value || todayISO(),
+        name: name,
+        note: box.querySelector('#pc-note').value.trim() || undefined,
+      };
+      var old = cur ? editKey : null;
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      box.remove();
+      // 存的时候按时间从早到晚排，和体重那份一个规矩
+      persistList('procedures',
+        procList().filter(function (x) { return procKey(x) !== old; }).concat([rec])
+          .sort(function (a, b) { return (a.date || '') < (b.date || '') ? -1 : 1; }),
+        '医美记录：' + name);
+    });
+  }
+
+  function deleteProc(key) {
+    var p = procList().filter(function (x) { return procKey(x) === key; })[0];
+    if (!p || !confirm('删掉「' + (p.name || '') + '」这条？')) return;
+    persistList('procedures',
+      procList().filter(function (x) { return procKey(x) !== key; })
+        .sort(function (a, b) { return (a.date || '') < (b.date || '') ? -1 : 1; }),
+      '医美记录：删除 ' + (p.name || ''));
   }
 
   /* ---- 记一条 ---- */
@@ -2115,11 +2698,9 @@
     };
   }
 
-  /* 带妆时的持妆状态。AI 会自动勾，不准直接点掉 —— 这些是判断
+  /* 带妆时的持妆状态、光线预设都在标签库里（mkstate / light）——
+     AI 会自动勾持妆状态，不准直接点掉。这些是判断
      「这个底妆到底扛不扛得住」最直接的证据，比分数更具体。 */
-  var MAKEUP_STATES = ['泛油光', '斑驳', '卡粉', '脱妆', '暗沉', '干纹', '完好'];
-
-  var LIGHT_PRESETS = ['窗边自然光', '室内暖光', '室内白光', '近距离侧光', '均匀正面光', '室外'];
 
   function renderCompose() {
     var host = $('#view-compose');
@@ -2180,6 +2761,15 @@
         '<textarea id="fNote" placeholder="看到什么写什么，可留空">' + esc(d.note) + '</textarea>' +
       '</div>' +
 
+      /* 标签原来是折叠区里一个用空格分词的文本框：想不起上次写的是
+         「泪沟」还是「泪沟处」，两种写法就成了两个标签，等于白记。
+         改成点选，缺哪个当场加。放在外面 —— 收在「更多」里等于没有。 */
+      '<div class="field"><label>部位标签</label>' +
+        '<div id="fZone"></div>' +
+        '<div class="tiny hint">这次在看哪儿。时间线上点一下标签，' +
+          '就只剩同一处的记录。</div>' +
+      '</div>' +
+
       '<button class="btn" id="saveBtn">' + (d.editingId ? '保存修改' : '保存') + '</button>' +
 
       '<button class="btn ghost" id="aiBtn" type="button" style="margin-top:10px">' +
@@ -2194,17 +2784,13 @@
 
       /* ---- 以下折叠 ---- */
       '<button class="more-toggle" id="moreToggle" type="button" aria-expanded="false">' +
-        '更多（光线、评分、产品、标签）<span class="ml-caret">▾</span>' +
+        '更多（光线、评分、产品）<span class="ml-caret">▾</span>' +
       '</button>' +
       '<div id="moreBox" hidden>' +
 
         '<div class="field"><label>光线条件</label>' +
           '<input type="text" id="fLight" placeholder="比如：窗边自然光" value="' + esc(d.light) + '">' +
-          '<div class="segmented" id="lightPresets" style="margin-top:8px">' +
-          LIGHT_PRESETS.map(function (p) {
-            return '<button data-v="' + esc(p) + '" style="flex:0 1 auto;font-size:12px;min-height:36px">' +
-              esc(p) + '</button>';
-          }).join('') + '</div>' +
+          '<div id="lightPresets" style="margin-top:8px"></div>' +
           '<div class="tiny hint">填了这个，AI 判读会准很多。</div>' +
         '</div>' +
 
@@ -2216,21 +2802,11 @@
           ? '<div class="field"><label>妆容</label>' +
               '<div class="card" id="fMakeupScores"></div>' +
               '<div class="tiny hint" style="margin:10px 0 8px">持妆状态（AI 会自动勾，不准就点掉）</div>' +
-              '<div class="segmented" id="fMakeupState">' +
-              MAKEUP_STATES.map(function (x) {
-                var on = (d.makeupState || []).indexOf(x) >= 0;
-                return '<button data-v="' + esc(x) + '"' + (on ? ' class="on"' : '') +
-                  ' style="flex:0 1 auto;font-size:12px;min-height:36px">' + esc(x) + '</button>';
-              }).join('') +
-              '</div>' +
+              '<div id="fMakeupState"></div>' +
             '</div>'
           : '') +
 
         (d.face === 'makeup' ? '' : productField(d)) +
-
-        '<div class="field"><label>标签</label>' +
-          '<input type="text" id="fTags" value="' + esc((d.tags || []).join(' ')) + '">' +
-        '</div>' +
 
       '</div>' +
 
@@ -2275,13 +2851,17 @@
     });
 
     var ms = $('#fMakeupState', host);
-    if (ms) ms.addEventListener('click', function (ev) {
-      var b = ev.target.closest('button');
-      if (!b) return;
-      d.makeupState = d.makeupState || [];
-      var at = d.makeupState.indexOf(b.dataset.v);
-      if (at >= 0) d.makeupState.splice(at, 1); else d.makeupState.push(b.dataset.v);
-      b.classList.toggle('on');
+    if (ms) mountTagRow(ms, 'mkstate', {
+      isOn: function (k) { return (d.makeupState || []).indexOf(k) >= 0; },
+      onPick: function (k) {
+        d.makeupState = d.makeupState || [];
+        var at = d.makeupState.indexOf(k);
+        if (at >= 0) d.makeupState.splice(at, 1); else d.makeupState.push(k);
+      },
+      extra: function () { return (d.makeupState || []).slice(); },
+      onRename: function (map) {
+        d.makeupState = (d.makeupState || []).map(function (x) { return map[x] || x; });
+      },
     });
 
     var fms = $('#fMakeupScores', host);
@@ -2321,8 +2901,18 @@
     var noteBox = $('#fNote', host);
     autoGrow(host);
     noteBox.addEventListener('input', function () { d.note = this.value; });
-    $('#fTags', host).addEventListener('input', function () {
-      d.tags = this.value.split(/[\s,，、]+/).filter(Boolean);
+    mountTagRow($('#fZone', host), 'zone', {
+      isOn: function (k) { return (d.tags || []).indexOf(k) >= 0; },
+      onPick: function (k) {
+        d.tags = d.tags || [];
+        var at = d.tags.indexOf(k);
+        if (at >= 0) d.tags.splice(at, 1); else d.tags.push(k);
+      },
+      // 早先手打的、AI 填的标签库里没有，也得露出来，否则看着像丢了
+      extra: function () { return (d.tags || []).slice(); },
+      onRename: function (map) {
+        d.tags = (d.tags || []).map(function (x) { return map[x] || x; });
+      },
     });
     var splitList = function (v) { return v.split(/[,，、]+/).map(function (x) { return x.trim(); }).filter(Boolean); };
     bindPicker(host);
@@ -2342,11 +2932,12 @@
     };
     seg('#fFace', 'face', true);   // true = 改完重画，产品栏要跟着换位置
 
-    $('#lightPresets', host).addEventListener('click', function (ev) {
-      var b = ev.target.closest('button');
-      if (!b) return;
-      d.light = b.dataset.v;
-      $('#fLight', host).value = d.light;
+    mountTagRow($('#lightPresets', host), 'light', {
+      isOn: function (k) { return d.light === k; },
+      onPick: function (k) {
+        d.light = (d.light === k) ? '' : k;
+        $('#fLight', host).value = d.light;
+      },
     });
 
     /* 草稿里的照片也要能点开看 —— 传之前就该确认拍清楚没有。
@@ -2405,7 +2996,9 @@
       Object.assign(d.makeupScores, r.makeup || {});
       if (r.tags && r.tags.length) d.tags = r.tags;
       if (r.makeupState && r.makeupState.length) {
-        d.makeupState = r.makeupState.filter(function (x) { return MAKEUP_STATES.indexOf(x) >= 0; });
+        // 只认标签库里有的：AI 偶尔会自创一个词，别让它往库外面写
+        var known = tagItems('mkstate').map(function (t) { return t.label; });
+        d.makeupState = r.makeupState.filter(function (x) { return known.indexOf(x) >= 0; });
       }
       if (r.summary && !d.note) d.note = r.summary;
 

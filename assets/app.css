@@ -1523,3 +1523,68 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
   margin-left: 6px; padding: 1px 6px; border-radius: 999px;
   background: var(--focus); color: #fff; font-size: 10px;
 }
+
+/* ---------- 随手记里的待办 ---------- */
+/* 方框和文字并排，落在备注那一列的起点上。
+   不跟上一行的日期对齐是故意的 —— 勾选框要挨着字，手指才点得准。 */
+.memo-todo .memo-text { display: flex; align-items: flex-start; gap: 8px; }
+.memo-todo .memo-text .tt { flex: 1; min-width: 0; }
+.todo-box {
+  position: relative; flex: none; box-sizing: border-box;
+  width: 16px; height: 16px; margin-top: 1px; padding: 0;
+  border: 1px solid var(--line-2); border-radius: 5px; background: var(--card);
+  -webkit-appearance: none; appearance: none; cursor: pointer;
+}
+/* 16px 的方框手指点不准，往外撑一圈看不见的热区 */
+.todo-box::before { content: ""; position: absolute; inset: -13px; }
+.todo-box.on { background: var(--accent); border-color: var(--accent); }
+/* ✓ 用两条边画出来，不用 ☑ —— 那个字形在不同系统里差别太大 */
+.todo-box.on::after {
+  content: ""; position: absolute; left: 5px; top: 1.5px;
+  width: 3.5px; height: 7.5px;
+  border: solid var(--card); border-width: 0 1.6px 1.6px 0;
+  transform: rotate(42deg);
+}
+/* 勾掉之后划掉、压淡，但还留在列表里 */
+.care-row.done .memo-text .tt { text-decoration: line-through; opacity: .55; }
+.care-row.done .cr-top b { opacity: .6; }
+
+/* ---------- 标签：一排能自己加、改名、拿掉的小标签 ---------- */
+.tag-row { align-items: center; }
+/* ＋ 和「管理」不是标签本身，用虚线框跟内容区分开 */
+.pchip.tag-op { border-style: dashed; color: var(--ink-faint); }
+.tag-new { display: flex; gap: 8px; margin-top: 8px; }
+.tag-new input {
+  flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card);
+  font-family: var(--sans); font-size: 16px; color: var(--ink);
+}
+.tag-new .more-toggle,
+.tag-mgr .more-toggle { flex: 0 0 auto; width: auto; margin-top: 0; padding: 8px 14px; border-top: none; }
+.tag-mgr {
+  margin-top: 4px; padding: 12px;
+  border: 1px dashed var(--line-2); border-radius: 12px; background: var(--card-2);
+}
+.tag-mgr > .tiny { margin-bottom: 10px; line-height: 1.6; }
+.tm-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.tm-row input {
+  flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card);
+  font-family: var(--sans); font-size: 16px; color: var(--ink);
+}
+.tag-mgr .care-add { justify-content: flex-end; margin-bottom: 0; }
+
+/* 时间线上的标签是可以点的：点一下只看这一处 */
+button.pill {
+  border: none; cursor: pointer;
+  font-family: var(--sans); font-size: 11px; line-height: 1.6;
+}
+.tag-pill.on { outline: 1px solid var(--accent); }
+.tag-bar {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 14px; padding: 8px 12px;
+  border: 1px dashed var(--line-2); border-radius: 999px; background: var(--card);
+}
+.tag-bar .more-toggle {
+  width: auto; margin: 0 0 0 auto; padding: 4px 0; border-top: none;
+}
