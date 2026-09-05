@@ -1549,14 +1549,21 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
   background: var(--focus); color: #fff; font-size: 10px;
 }
 
-/* ---------- 随手记里的待办 ---------- */
-/* 方框和文字并排，落在备注那一列的起点上。
-   不跟上一行的日期对齐是故意的 —— 勾选框要挨着字，手指才点得准。 */
-.memo-todo .memo-text { display: flex; align-items: flex-start; gap: 8px; }
-.memo-todo .memo-text .tt { flex: 1; min-width: 0; }
+/* ---------- 随手记 ---------- */
+/* 日期、勾选框、正文、两个按钮排成一行，正文自己换行。
+   ⚠️ .care-what 默认是「一行装不下就打点省略」，随手记不能截 —— 那是全部内容。 */
+.memo-row .cr-top { align-items: flex-start; gap: 7px; }
+/* 正文那一列是这儿的主角，日期和按钮各让一点宽度出来 */
+.memo-row .cr-top b { flex: 0 0 70px; padding-top: 2px; }
+.memo-row .rv-edit { width: 22px; }
+.memo-row .memo-text {
+  white-space: pre-wrap; overflow: visible; text-overflow: clip;
+  line-height: 1.6; padding-top: 1px;
+}
+.memo-row .rv-edit { margin-top: 1px; }
 .todo-box {
   position: relative; flex: none; box-sizing: border-box;
-  width: 16px; height: 16px; margin-top: 1px; padding: 0;
+  width: 16px; height: 16px; margin-top: 3px; padding: 0;
   border: 1px solid var(--line-2); border-radius: 5px; background: var(--card);
   -webkit-appearance: none; appearance: none; cursor: pointer;
 }
@@ -1571,7 +1578,7 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
   transform: rotate(42deg);
 }
 /* 勾掉之后划掉、压淡，但还留在列表里 */
-.care-row.done .memo-text .tt { text-decoration: line-through; opacity: .55; }
+.care-row.done .memo-text { text-decoration: line-through; opacity: .55; }
 .care-row.done .cr-top b { opacity: .6; }
 
 /* ---------- 标签：一排能自己加、改名、拿掉的小标签 ---------- */

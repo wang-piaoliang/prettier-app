@@ -2010,23 +2010,24 @@
   }
 
   function memoHTML() {
+    /* 一条随手记就是一句话，没有「名称 + 备注」两截 —— 别占两行。
+       原来上面一行只剩个日期和两个按钮、底下那句话缩在 85px 处，跟谁都对不齐。
+       现在摆进中间那一列，和体重、运动、身体记录、医美记录一个排法。 */
     var rows = noteList().map(function (n) {
       var done = !!(n.todo && n.done);
-      var text = n.todo
-        ? '<button class="todo-box' + (done ? ' on' : '') + '" type="button" ' +
-            'data-memo-check="' + esc(n.id) + '" aria-label="' +
-            (done ? '取消勾掉' : '勾掉') + '"></button>' +
-          '<span class="tt">' + esc(n.text || '') + '</span>'
-        : esc(n.text || '');
-      return '<div class="care-row' + (n.todo ? ' memo-todo' : '') + (done ? ' done' : '') +
-          '" data-memo="' + esc(n.id) + '">' +
+      return '<div class="care-row memo-row' + (n.todo ? ' memo-todo' : '') +
+          (done ? ' done' : '') + '" data-memo="' + esc(n.id) + '">' +
         '<div class="cr-top">' +
           '<b>' + esc(fmtDate((n.at || '').slice(0, 10))) + '</b>' +
-          '<span class="care-what"></span>' +
+          (n.todo
+            ? '<button class="todo-box' + (done ? ' on' : '') + '" type="button" ' +
+                'data-memo-check="' + esc(n.id) + '" aria-label="' +
+                (done ? '取消勾掉' : '勾掉') + '"></button>'
+            : '') +
+          '<span class="care-what memo-text">' + esc(n.text || '') + '</span>' +
           '<button class="rv-edit" data-memo-edit="' + esc(n.id) + '" aria-label="改">✎</button>' +
           '<button class="rv-edit" data-memo-del="' + esc(n.id) + '" aria-label="删">×</button>' +
         '</div>' +
-        '<div class="cr-note memo-text">' + text + '</div>' +
       '</div>';
     });
     var open = openTodos();
