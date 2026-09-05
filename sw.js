@@ -5,7 +5,7 @@
 
    改动外壳后把 VERSION 加一，旧缓存会在 activate 时清掉。 */
 
-const VERSION = 'prettier-v72';
+const VERSION = 'prettier-v73';
 
 // 路径一律用 './'，不要写成 index.html：
 // Cloudflare 的静态资源托管会把 /index.html 307 重定向到 /，

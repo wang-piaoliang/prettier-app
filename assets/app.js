@@ -2137,7 +2137,7 @@
   // 能敷的：面膜、唇膜、眼膜
   function maskProducts() {
     return allProducts().filter(function (p) {
-      if (p.status === 'retired') return false;
+      if (!inUse(p)) return false;
       var hay = (p.category || '') + ' ' + (p.name || '') + ' ' + (p.short || '');
       return /面膜|眼膜|唇膜/.test(hay);
     });
@@ -2692,7 +2692,7 @@
      库里按顺序列出来，点一下就加/去掉，输入框跟着同步 ——
      输入框留着是为了记库里还没有的东西。 */
   function pickerHTML(sel, bare) {
-    var list = allProducts().filter(function (p) { return p.status !== 'retired'; });
+    var list = allProducts().filter(inUse);
     if (!list.length) return '';
     var chosen = {};
     ['skincare', 'makeup'].forEach(function (k) {
@@ -4206,6 +4206,11 @@
     return rs.reduce(function (x, y) { return x + y; }, 0) / rs.length;
   }
 
+  /* 在用 = 既没停用、也不是「待尝试」。
+     待尝试的东西手里还没有，它不能出现在「今天用了什么」的选项里 ——
+     能选就会有人选，记录就脏了。 */
+  function inUse(p) { return p.status !== 'retired' && p.status !== 'wishlist'; }
+
   var prodQuery = '';
 
   function matchProduct(p, q) {
@@ -4222,7 +4227,7 @@
     var body = '';
     KINDS.forEach(function (k) {
       var rows = sortProducts(list.filter(function (p) {
-        return kindOf(p) === k.key && p.status !== 'retired';
+        return kindOf(p) === k.key && inUse(p);
       }));
       if (!rows.length) return;
       var closed = prodFold[k.key];
@@ -4248,6 +4253,18 @@
         '<div class="cat-body"' + (closed ? ' hidden' : '') + '>' + subs + '</div>';
     });
 
+    /* 待尝试单独一节，不按类别拆 —— 想试的东西一次就那么几件，
+       拆进五个分类里反而要翻五次才看全。 */
+    var wish = sortProducts(list.filter(function (p) { return p.status === 'wishlist'; }));
+    if (wish.length) {
+      var wClosed = prodFold.wishlist;
+      body +=
+        '<div class="cat-head' + (wClosed ? ' closed' : '') + '" data-kind="wishlist">' +
+          '待尝试<span>' + wish.length + '</span><span class="ml-caret">▾</span></div>' +
+        '<div class="prod-list"' + (wClosed ? ' hidden' : '') + '>' +
+          wish.map(prodCardHTML).join('') + '</div>';
+    }
+
     var retired = list.filter(function (p) { return p.status === 'retired'; });
     if (retired.length) {
       var rClosed = prodFold.retired;
@@ -4269,7 +4286,8 @@
     host.innerHTML =
       '<div class="tl-bar">' +
         '<span class="tiny">产品库 · ' +
-          list.filter(function (p) { return p.status !== 'retired'; }).length + ' 件在用</span>' +
+          list.filter(inUse).length + ' 件在用' +
+          (wish.length ? ' · ' + wish.length + ' 件待尝试' : '') + '</span>' +
         '<button id="scanBtn" type="button">＋ 拍照识别</button>' +
       '</div>' +
       /* 三十多件之后，翻列表找一支眼线笔比搜一下慢多了。
@@ -4458,7 +4476,8 @@
       '<div class="act">' +
         '<button data-review="' + esc(p.id) + '">评分</button>' +
         '<button data-toggle="' + esc(p.id) + '">' +
-          (p.status === 'retired' ? '恢复' : '停用') + '</button>' +
+          (p.status === 'retired' ? '恢复'
+            : p.status === 'wishlist' ? '开始用' : '停用') + '</button>' +
       '</div>' +
       (rs.length
         ? '<div class="prod-reviews" id="rv-' + esc(p.id) + '" hidden>' +
@@ -4678,6 +4697,11 @@
   }
 
   /* 产品详情：在卡片里就地展开，所有字段直接改，不跳新页也不弹窗 */
+  /* 成分表历史上写过两个字段名：代码这边一直是 inci，但库里已有的四条
+     （大白瓶、紫熨斗、绽妍敷料、蓝科兴敷料）存的是 ingredients ——
+     结果是「填了却显示不出来」。读的时候两个都认，写的时候统一收敛到 inci。 */
+  function inciOf(p) { return p.inci || p.ingredients || ''; }
+
   var PROD_FIELDS = [
     /* 简称是【到处显示的那个名字】，你会改；
        名称是 AI 认出来的全名，一般不动。所以简称排最前。 */
@@ -4794,7 +4818,7 @@
         '<button class="ph-add" data-inci-shoot="' + esc(p.id) + '" type="button" ' +
           'aria-label="拍成分表">＋</button>' +
       '</b>' +
-      (p.inci ? '<div class="inci-text">' + esc(p.inci) + '</div>' : '') +
+      (inciOf(p) ? '<div class="inci-text">' + esc(inciOf(p)) + '</div>' : '') +
       (inciShots.length
         ? '<div class="pc-shots">' + inciShots.map(function (path, i) {
             return '<span class="pc-cell">' +
@@ -4805,7 +4829,7 @@
             '</span>';
           }).join('') + '</div>'
         : '') +
-      (p.inci || inciShots.length ? ''
+      (inciOf(p) || inciShots.length ? ''
         : '<div class="tiny">✎ 贴全成分表（可以直接粘贴），＋ 拍瓶身背面那一段。</div>') +
       '</div>';
 
@@ -5030,7 +5054,7 @@
         (from.photos || []).filter(function (p) { return (to.photos || []).indexOf(p) < 0; })),
       /* 同一件产品的不同色号，成分表通常也是同一份 —— 留已有的那份，
          没有才拿被并进来的。照片两边都留：色号之间偶尔真的有差别。 */
-      inci: to.inci || from.inci,
+      inci: inciOf(to) || inciOf(from),
       inciPhotos: (to.inciPhotos || []).concat(
         (from.inciPhotos || []).filter(function (p) {
           return (to.inciPhotos || []).indexOf(p) < 0;
@@ -5158,7 +5182,11 @@
     var list = allProducts().map(function (x) {
       if (x.id !== id) return x;
       var y = Object.assign({}, x);
-      if (y.status === 'retired') { y.status = 'using'; delete y.end; }
+      /* 待尝试 → 开始用：这一刻才算真的起用，start 按今天记。
+         不能沿用 addedAt —— 那是「记下这件想试的」的日期，可能早好几个月，
+         拿它当起用日期会把「用了多久」算多。 */
+      if (y.status === 'wishlist') { y.status = 'using'; y.start = today; delete y.end; }
+      else if (y.status === 'retired') { y.status = 'using'; delete y.end; }
       else { y.status = 'retired'; y.end = today; }   // 停用要记下日期
       if (!y.start) y.start = y.addedAt || today;
       return y;
@@ -5193,6 +5221,12 @@
             (i === 1 ? ' class="on"' : '') + '>' + esc(k.label) + '</button>';
         }).join('') +
       '</div>' +
+      /* 在用 / 待尝试：手动加的很多是「看到了想试」而不是「已经在用」，
+         入库时就分清楚，省得后面再去改一遍状态。 */
+      '<div class="segmented sm" id="newStatus" style="margin-top:6px">' +
+        '<button type="button" data-v="using" class="on">在用</button>' +
+        '<button type="button" data-v="wishlist">待尝试</button>' +
+      '</div>' +
       /* 手动添加也能配照片：拍一张，认出来的信息直接填进下面的空格 */
       '<button class="more-toggle" type="button" id="newShot">＋ 拍张照自动填</button>' +
       '<span class="tiny" id="newShotMsg"></span>' + rows +
@@ -5203,6 +5237,19 @@
     btn.insertAdjacentElement('afterend', box);
 
     var kind = 'skincare';
+    var newStatus = 'using';
+
+    box.querySelector('#newStatus').addEventListener('click', function (ev) {
+      var b = ev.target.closest('button');
+      if (!b) return;
+      newStatus = b.dataset.v;
+      Array.prototype.forEach.call(this.children, function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      // 起用日期跟着走：待尝试的还没开始用，不该预填今天
+      var st = box.querySelector('[data-f="start"]');
+      if (st) st.value = newStatus === 'wishlist' ? '' : todayISO();
+    });
+
     box.querySelector('#newShot').addEventListener('click', function () {
       if (!ensureKey()) return;
       var msg = box.querySelector('#newShotMsg');
@@ -5244,14 +5291,16 @@
     box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
       var p = { id: 'p' + Date.now().toString(36), kind: kind,
-                status: 'using', addedAt: todayISO() };
+                status: newStatus, addedAt: todayISO() };
       $$('input[data-f]', box).forEach(function (inp) {
         var v = inp.value.trim();
         if (!v) return;
         p[inp.dataset.f] = inp.type === 'number' ? Number(v) : v;
       });
       if (!p.name) return toast('至少写个名字', true);
-      if (!p.start) p.start = todayISO();
+      // 待尝试的还没开始用，别给它填起用日期
+      if (!p.start && newStatus !== 'wishlist') p.start = todayISO();
+      if (newStatus === 'wishlist') delete p.end;
 
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       box.remove();
@@ -5373,7 +5422,7 @@
       '<div class="tiny ie-lab" style="margin-top:0">全成分表（照瓶身抄，或直接粘贴）</div>' +
       '<textarea id="inci-txt" style="min-height:130px" ' +
         'placeholder="水、甘油、丁二醇、烟酰胺、透明质酸钠……">' +
-        esc(p.inci || '') + '</textarea>' +
+        esc(inciOf(p)) + '</textarea>' +
       '<div class="ie-act">' +
         '<button class="ie-cancel" type="button">取消</button>' +
         '<button class="ie-ok" type="button">保存</button>' +
@@ -5390,7 +5439,10 @@
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       box.remove();
       saveProducts(allProducts().map(function (x) {
-        return x.id === pid ? Object.assign({}, x, { inci: v || undefined }) : x;
+        // 存的时候把旧字段清掉，免得两个名字各存一份、以后不知道该信谁
+        return x.id === pid
+          ? Object.assign({}, x, { inci: v || undefined, ingredients: undefined })
+          : x;
       }), '产品库：' + shortName(p) + ' 的成分表')
         .then(function () { toast('已保存'); })
         .catch(function (e) { toast('失败：' + (e.message || e), true); });
