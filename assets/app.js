@@ -5200,9 +5200,11 @@
      以前是连着四个 prompt() 弹窗、且只能填名字和品牌 ——
      App 里其它地方都是页内编辑，只有这里弹窗，交互不一致。 */
   var newShots = null;
+  var newBuys = null;      // 刚才那几张照片里认出来的购买记录
 
   function addProductManually(btn) {
     newShots = null;
+    newBuys = null;
     if (btn.nextElementSibling && btn.nextElementSibling.classList.contains('inline-edit')) {
       return btn.nextElementSibling.remove();
     }
@@ -5259,22 +5261,37 @@
         this.value = '';
         if (!files.length) return;
         msg.textContent = '识别中…';
-        Promise.all(files.map(function (f) {
-          return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
-        })).then(function (blobs) {
+        /* 和补拍一样一张一张来：整批送给模型只会回来一件，
+           传 5 张订单截图就只剩 1 单。 */
+        var blobs = [], hits = 0;
+        newBuys = [];
+        files.reduce(function (prev, f, i) {
+          return prev.then(function () {
+            return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+          }).then(function (blob) {
+            blobs.push(blob);
+            if (files.length > 1) msg.textContent = '识别中… ' + (i + 1) + '/' + files.length;
+            return PrettierAI.identifyProducts([blob]).then(function (found) {
+              var x = (found.products || [])[0];
+              if (!x) return;
+              hits++;
+              // 只填空着的格子，你已经写过的不动
+              $$('[data-f]', box).forEach(function (inp2) {
+                var v = x[inp2.dataset.f];
+                if (v != null && v !== '' && !inp2.value) inp2.value = v;
+              });
+              var short = box.querySelector('[data-f="short"]');
+              if (short && !short.value) short.value = x.short || ((x.brand || '') + (x.name || ''));
+              var buy = buyFrom(x);
+              if (buy) newBuys = mergeBuys(newBuys, [buy]).list;
+            });
+          }).catch(function () { /* 单张失败不拖累整批 */ });
+        }, Promise.resolve()).then(function () {
           newShots = blobs;
-          return PrettierAI.identifyProducts(blobs);
-        }).then(function (found) {
-          var x = (found.products || [])[0];
-          if (!x) { msg.textContent = '没认出产品信息，手填也行'; return; }
-          // 只填空着的格子，你已经写过的不动
-          $$('[data-f]', box).forEach(function (inp2) {
-            var v = x[inp2.dataset.f];
-            if (v != null && v !== '' && !inp2.value) inp2.value = v;
-          });
-          var short = box.querySelector('[data-f="short"]');
-          if (short && !short.value) short.value = x.short || ((x.brand || '') + (x.name || ''));
-          msg.textContent = '已填入，检查一下再入库';
+          if (!hits) { msg.textContent = '没认出产品信息，手填也行'; return; }
+          msg.textContent = newBuys.length
+            ? '已填入，还认出 ' + newBuys.length + ' 笔购买，检查一下再入库'
+            : '已填入，检查一下再入库';
         }).catch(function (e) { msg.textContent = '识别失败：' + (e.message || e); });
       };
       inp.click();
@@ -5298,6 +5315,12 @@
         p[inp.dataset.f] = inp.type === 'number' ? Number(v) : v;
       });
       if (!p.name) return toast('至少写个名字', true);
+      /* 照片里认出来的购买信息一起带进去 —— 认出来却不记，等于白传。
+         第一次购买的日期比「今天」更接近真正的起用时间。 */
+      if (newBuys && newBuys.length) {
+        p.purchases = newBuys.slice();
+        if (!p.start && newStatus !== 'wishlist') p.start = newBuys[0].date;
+      }
       // 待尝试的还没开始用，别给它填起用日期
       if (!p.start && newStatus !== 'wishlist') p.start = todayISO();
       if (newStatus === 'wishlist') delete p.end;
@@ -5315,6 +5338,7 @@
         p.photos = files.map(function (f) { return f.path; });
         newShots = null;
       }
+      newBuys = null;
 
       saveProducts(allProducts().concat([p]), '产品库：添加 ' + p.name, files)
         .then(function () { toast('已入库'); refresh('products'); })
@@ -5326,6 +5350,26 @@
   /* 识别结果里凡是带了价格/规格/日期的，都当成一次购买记录下来。
      用户反馈：「上传的照片多了时间、价格、容量等信息，你没补进去」——
      以前只往产品字段里塞，字段非空就被跳过，等于白认。 */
+  /* 照片名 = 前缀 + 内容指纹。
+     同一张截图重传一次就落回同一个路径，不会在产品下面挂出两张一样的图。
+     算不出指纹（老浏览器没有 crypto.subtle）就退回时间戳，最多是多存一份，不出错。 */
+  function photoPath(prefix, blob) {
+    var fallback = prefix + Date.now().toString(36) +
+      '-' + Math.random().toString(36).slice(2, 6) + '.jpg';
+    if (!(window.crypto && crypto.subtle && blob.arrayBuffer)) {
+      return Promise.resolve(fallback);
+    }
+    return blob.arrayBuffer()
+      .then(function (buf) { return crypto.subtle.digest('SHA-256', buf); })
+      .then(function (h) {
+        var hex = Array.prototype.map.call(new Uint8Array(h), function (b) {
+          return b.toString(16).padStart(2, '0');
+        }).join('');
+        return prefix + hex.slice(0, 12) + '.jpg';
+      })
+      .catch(function () { return fallback; });
+  }
+
   function buyFrom(x) {
     var price = x.price != null && x.price !== '' ? Number(x.price) : null;
     var size = x.size || '';
@@ -5351,56 +5395,117 @@
     return /^\d+\s*[片枚盒支只袋]装?$/.test(sp) ? '' : sp;
   }
 
-  function hasSameBuy(list, b) {
-    var bv = buyVariant(b);
-    return (list || []).some(function (o) {
+  /* 同一天 + 没有任何一项「两边都写了却写得不一样」→ 同一单。
+     ⚠️ 不能只看日期：同一天同样价格买了两个不同款式，那是两张订单
+     （依克多因和透明质酸就各是一单），合掉就丢记录了 ——
+     所以只要有一项真冲突就判成两单。
+     反过来，一边空着不算冲突：那是【信息缺】，不是另一单。
+     以前那版要求价格和渠道都一字不差，结果同一张订单截图重传一次、
+     模型这回多认出个渠道，就又写了一条重复的。 */
+  function sameBuyAt(list, b) {
+    return (list || []).findIndex(function (o) {
       if (o.date !== b.date) return false;
-      if ((o.price == null ? '' : o.price) !== (b.price == null ? '' : b.price)) return false;
-      if ((o.where || '') !== (b.where || '')) return false;
-      var ov = buyVariant(o);
-      return !ov || !bv || ov === bv;
+      if (o.price != null && b.price != null && Number(o.price) !== Number(b.price)) return false;
+      if (o.where && b.where && o.where !== b.where) return false;
+      if (o.size && b.size && o.size !== b.size) return false;
+      var ov = buyVariant(o), bv = buyVariant(b);
+      if (ov && bv && ov !== bv) return false;
+      return true;
     });
+  }
+
+  function hasSameBuy(list, b) { return sameBuyAt(list, b) >= 0; }
+
+  /* 同一单又传了一次：不写第二条，把这次多认出来的补进原来那条。
+     只补空着的格子 —— 你自己改过的价格不能被模型盖掉。
+     返回补了几项。 */
+  function fillBuy(o, b) {
+    var n = 0;
+    ['price', 'size', 'where', 'spec'].forEach(function (k) {
+      var cur = o[k];
+      if (cur !== undefined && cur !== '' && cur !== null) return;
+      if (b[k] === undefined || b[k] === '' || b[k] === null) return;
+      o[k] = b[k];
+      n++;
+    });
+    return n;
+  }
+
+  /* 把一批认出来的订单并进已有的购买记录里。
+     同一单就补，认不出对应的才新增。返回 {list, added, filled}。 */
+  function mergeBuys(existing, incoming) {
+    var out = (existing || []).map(function (o) { return Object.assign({}, o); });
+    var added = 0, filled = 0;
+    (incoming || []).forEach(function (b) {
+      var at = sameBuyAt(out, b);
+      if (at < 0) { out.push(b); added++; return; }
+      if (fillBuy(out[at], b)) filled++;
+    });
+    return { list: out, added: added, filled: filled };
   }
 
   /* 单个产品补拍：直接指定是哪一件，不走去重猜名字。
      用户要的是「这件东西我又看到了新信息，补进去」，
-     而不是「认认看这是什么」—— 后者才需要匹配。 */
+     而不是「认认看这是什么」—— 后者才需要匹配。
+
+     ⚠️ 一张一张识别，不整批送。
+     以前是把 N 张一次交给模型、然后只取 products[0]：
+     5 张订单截图本来是 5 次回购，结果只落了 1 条购买记录，另外 4 单白传。
+     产品扫描那边（scanProductsJob）早就改成一张一张了，这条路当时漏掉了。
+     一张订单截图就对应一单，模型不用在多张之间猜谁是谁。 */
   function shootProduct(pid, files, statusEl) {
     if (!files || !files.length) return;
     if (!ensureKey()) return;
+    var list = Array.prototype.slice.call(files);
+    var shots = [], buys = [], fields = {}, hits = 0;
     statusEl.textContent = '识别中…';
 
-    Promise.all(Array.prototype.slice.call(files).map(function (f) {
-      return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
-    })).then(function (blobs) {
-      return PrettierAI.identifyProducts(blobs).then(function (found) {
-        var x = (found.products || [])[0];
-        if (!x) throw new Error('这张照片上没认出产品信息');
-
-        var stamp = Date.now().toString(36);
-        var shots = blobs.map(function (b, i) {
-          return { path: 'products/' + pid + '-' + stamp + '-' + i + '.jpg', blob: b };
-        });
-
-        var next = allProducts().map(function (p) {
-          if (p.id !== pid) return p;
-          var add = {};
-          // 只补空的，你自己填过的不动
-          ['brand', 'category', 'size', 'price', 'spec', 'note'].forEach(function (f) {
-            if ((p[f] === undefined || p[f] === '') && x[f]) add[f] = x[f];
+    list.reduce(function (prev, f, i) {
+      return prev.then(function () {
+        return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+      }).then(function (blob) {
+        // 文件名就是这张图的内容指纹：同一张再传一次，路径一样，不会存成两份
+        return photoPath('products/' + pid + '-', blob).then(function (path) {
+          shots.push({ path: path, blob: blob });
+          if (list.length > 1) statusEl.textContent = '识别中… ' + (i + 1) + '/' + list.length;
+          return PrettierAI.identifyProducts([blob]).then(function (found) {
+            var x = (found.products || [])[0];
+            if (!x) return;               // 这张没认出来，照片照存，接着看下一张
+            hits++;
+            ['brand', 'category', 'size', 'price', 'spec', 'note'].forEach(function (k) {
+              if (fields[k] === undefined && x[k]) fields[k] = x[k];
+            });
+            var buy = buyFrom(x);
+            // 同一单截了两张图，先在这一批里合掉
+            if (buy) buys = mergeBuys(buys, [buy]).list;
           });
-          var buy = buyFrom(x);
-          if (buy && !hasSameBuy(p.purchases, buy)) {
-            add.purchases = (p.purchases || []).concat([buy]);
-          }
-          add.photos = (p.photos || []).concat(shots.map(function (s) { return s.path; }));
-          return Object.assign({}, p, add);
         });
-
-        var got = [x.size, x.price ? x.price + ' 元' : '', x.spec].filter(Boolean).join(' · ');
-        statusEl.textContent = got ? '认出：' + got : '照片已存下，没认出新字段';
-        return saveProducts(next, '产品库：从照片补充信息', shots);
+      }).catch(function () { /* 单张失败不拖累整批 */ });
+    }, Promise.resolve()).then(function () {
+      var got = { added: 0, filled: 0 };
+      var next = allProducts().map(function (p) {
+        if (p.id !== pid) return p;
+        var add = {};
+        // 只补空的，你自己填过的不动
+        Object.keys(fields).forEach(function (k) {
+          if (p[k] === undefined || p[k] === '') add[k] = fields[k];
+        });
+        got = mergeBuys(p.purchases, buys);
+        if (got.added || got.filled) add.purchases = got.list;
+        // 已经有的那几张不再重复挂
+        var have = (p.photos || []).slice();
+        shots.forEach(function (s) { if (have.indexOf(s.path) < 0) have.push(s.path); });
+        add.photos = have;
+        return Object.assign({}, p, add);
       });
+
+      var say = [];
+      if (got.added) say.push('记下 ' + got.added + ' 笔购买');
+      if (got.filled) say.push('补全 ' + got.filled + ' 笔');
+      statusEl.textContent = say.length
+        ? say.join('，')
+        : (hits ? '这些单之前都记过了，没有新信息' : '照片已存下，没认出购买信息');
+      return saveProducts(next, '产品库：从照片补充信息', shots);
     }).then(function () {
       refresh('products');
     }).catch(function (e) {
@@ -5599,10 +5704,14 @@
             ['brand', 'category', 'size', 'price', 'spec', 'note', 'short'].forEach(function (k) {
               if ((p[k] === undefined || p[k] === '') && x[k]) add[k] = x[k];
             });
-            if (buy && !hasSameBuy(p.purchases, buy)) {
-              add.purchases = (p.purchases || []).concat([buy]);
+            if (buy) {
+              // 同一单再扫到，补进原来那条，不写第二条
+              var m = mergeBuys(p.purchases, [buy]);
+              if (m.added || m.filled) add.purchases = m.list;
             }
-            add.photos = (p.photos || []).concat([path]);
+            if ((p.photos || []).indexOf(path) < 0) {
+              add.photos = (p.photos || []).concat([path]);
+            }
             merged[at] = Object.assign({}, p, add);
             patchedNames.push(shortName(merged[at]));
           });
