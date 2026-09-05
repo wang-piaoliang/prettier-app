@@ -1235,6 +1235,12 @@
         if (pcE) return openProcEditor(pcE.closest('.care-row'), pcE.dataset.pcEdit);
         var pcD = ev.target.closest('[data-pc-del]');
         if (pcD) return deleteProc(pcD.dataset.pcDel);
+        var pcS = ev.target.closest('[data-pc-shoot]');
+        if (pcS) return pickProcShots(pcS.dataset.pcShoot);
+        var pcX = ev.target.closest('[data-pc-shot-del]');
+        if (pcX) return deleteProcShot(pcX.dataset.pcShotDel, Number(pcX.dataset.i));
+        var pcV = ev.target.closest('[data-pc-shot]');
+        if (pcV) return openProcShot(pcV.dataset.pcShot, Number(pcV.dataset.i));
 
         var mf = ev.target.closest('[data-mlfold]');
         if (mf) {
@@ -2471,14 +2477,26 @@
   function procedureHTML() {
     var rows = procList().map(function (p) {
       var k = procKey(p);
+      var shots = p.photos || [];
       return '<div class="care-row" data-pcid="' + esc(k) + '">' +
         '<div class="cr-top">' +
           '<b>' + esc(fmtDate(p.date)) + '</b>' +
           '<span class="care-what">' + esc(p.name || '') + '</span>' +
+          '<button class="rv-edit" data-pc-shoot="' + esc(k) + '" aria-label="加照片">＋</button>' +
           '<button class="rv-edit" data-pc-edit="' + esc(k) + '" aria-label="改">✎</button>' +
           '<button class="rv-edit" data-pc-del="' + esc(k) + '" aria-label="删">×</button>' +
         '</div>' +
         (p.note ? '<div class="cr-note">' + esc(p.note) + '</div>' : '') +
+        (shots.length
+          ? '<div class="pc-shots">' + shots.map(function (path, i) {
+              return '<span class="pc-cell">' +
+                '<button class="pc-shot" type="button" data-pc-shot="' + esc(k) + '" ' +
+                  'data-i="' + i + '"><img data-key="' + esc(path) + '" alt=""></button>' +
+                '<button class="pc-del" type="button" data-pc-shot-del="' + esc(k) + '" ' +
+                  'data-i="' + i + '" aria-label="删掉这张">×</button>' +
+              '</span>';
+            }).join('') + '</div>'
+          : '') +
       '</div>';
     });
 
@@ -2489,7 +2507,9 @@
         (rows.length ? '<div class="w-list">' + limitRows('proc', rows) + '</div>'
                      : '<div class="tiny">做过什么、什么时候做的，记在这里。' +
                        '哪家做的、恢复几天、效果怎么样写在备注里，' +
-                       '下次才知道值不值得再做。</div>') +
+                       '下次才知道值不值得再做。<br>' +
+                       '每条右边的 ＋ 存照片：病历、导诊单、药盒、缴费单 —— ' +
+                       '单据上写的东西，隔半年只有原件说得清。</div>') +
       '</div>');
   }
 
@@ -2552,7 +2572,90 @@
     persistList('procedures',
       procList().filter(function (x) { return procKey(x) !== key; })
         .sort(function (a, b) { return (a.date || '') < (b.date || '') ? -1 : 1; }),
-      '医美记录：删除 ' + (p.name || ''));
+      '医美记录：删除 ' + (p.name || ''))
+      // 记录先删干净，再清照片文件 —— 反过来的话中途失败会留下引用不到的图
+      .then(function () {
+        return (p.photos || []).length
+          ? GitStore.commitDelete(p.photos, '删除「' + (p.name || '') + '」的照片')
+          : null;
+      })
+      .catch(function (e) { toast('删除失败：' + (e.message || e), true); });
+  }
+
+  /* 病历、导诊单、药盒、缴费单。
+     和产品那边的「拍照识别」不是一回事：单据要的是【原样存档】——
+     AI 认错了反而污染记录，而且没填 API Key 也该能存。所以这里只压缩和上传。 */
+  function pickProcShots(key) {
+    var inp = $('#docInput');
+    if (!inp) return;
+    inp.onchange = function () {
+      addProcShots(key, this.files);
+      this.value = '';
+    };
+    inp.click();
+  }
+
+  function addProcShots(key, files) {
+    if (!files || !files.length) return;
+    var p = procList().filter(function (x) { return procKey(x) === key; })[0];
+    if (!p) return;
+    var n = files.length;
+    toast('照片处理中…（' + n + ' 张）');
+
+    Promise.all(Array.prototype.slice.call(files).map(function (f) {
+      return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+    })).then(function (blobs) {
+      /* 早先手写进去的记录没有 id，身份是「日期+名字」——
+         之后改个名字，照片就跟丢了。第一次贴照片顺手补一个 id 钉住它。 */
+      var stamp = Date.now().toString(36);
+      var pid = p.id || ('pc' + stamp);
+      var shots = blobs.map(function (b, i) {
+        return { path: 'procedures/' + pid + '-' + stamp + '-' + i + '.jpg', blob: b };
+      });
+      // 图先进仓库；记录里存的是路径，反过来会指向还不存在的文件
+      return GitStore.commit(shots, '医美记录：' + (p.name || '') + ' 的照片')
+        .then(function () {
+          return persistList('procedures', procList().map(function (x) {
+            if (procKey(x) !== key) return x;
+            return Object.assign({}, x, {
+              id: pid,
+              photos: (x.photos || []).concat(shots.map(function (s) { return s.path; })),
+            });
+          }).sort(function (a, b) { return (a.date || '') < (b.date || '') ? -1 : 1; }),
+            '医美记录：' + (p.name || '') + ' 加 ' + n + ' 张照片');
+        });
+    /* ⚠️ 必须重新拉一次。缩略图靠 state.tree 里的 blob sha 找图，
+       而 persistList 只写 settings.json、不碰这棵树 ——
+       不补这一下，照片存进去了，位置也占了，但一直显示「照片加载失败」。
+       产品那边的 saveProducts 自带这一步，所以没露出来过。 */
+    }).then(loadData).then(function () {
+      refresh('mainlines');
+      toast('已存下 ' + n + ' 张');
+    }).catch(function (e) {
+      toast('照片没存上：' + (e.message || e), true);
+    });
+  }
+
+  function openProcShot(key, idx) {
+    var p = procList().filter(function (x) { return procKey(x) === key; })[0];
+    if (p && (p.photos || []).length) openPhotoList(p.photos, idx);
+  }
+
+  function deleteProcShot(key, idx) {
+    var p = procList().filter(function (x) { return procKey(x) === key; })[0];
+    if (!p || !p.photos || !p.photos[idx]) return;
+    var path = p.photos[idx];
+    if (!confirm('删掉这张照片？')) return;
+
+    persistList('procedures', procList().map(function (x) {
+      if (procKey(x) !== key) return x;
+      return Object.assign({}, x, {
+        photos: x.photos.filter(function (_, i) { return i !== idx; }),
+      });
+    }).sort(function (a, b) { return (a.date || '') < (b.date || '') ? -1 : 1; }),
+      '医美记录：删掉一张照片')
+      .then(function () { return GitStore.commitDelete([path], '删除照片 ' + path); })
+      .catch(function (e) { toast('删除失败：' + (e.message || e), true); });
   }
 
   /* ---- 记一条 ---- */
@@ -2565,13 +2668,21 @@
   /* 找最近一条【记了某类产品】的记录。
      彩妆必须只跟带妆的记录走 —— 直接沿用上一条的话，
      上一条要是素颜，彩妆就成空的了，等于每天都要重填。 */
+  /* 护肤也要按 face 找，不能只看「最近一条有产品的」。
+     素颜那天用的和带妆那天用的根本是两套（带妆那天还有防晒和底妆前的步骤），
+     混着沿用等于每天都要重填。
+
+     还有一条更要命的：找到同类的第一条就返回，【空也返回】。
+     以前是 list.length 才算数，于是「那天什么都没用」被当成「没数据」，
+     继续往前翻，把更早的产品又拽回来 —— 术后医嘱是什么都不涂，
+     结果 9/1–9/4 四条素颜记录全被自动填上了小棕瓶和敷尔佳面膜，
+     人根本没选过。判读的时候这批假数据是会误导人的。 */
   function lastProducts(kind, faceNeeded) {
     var all = newestFirst((state.data && state.data.entries) || []);
     for (var i = 0; i < all.length; i++) {
       var e = all[i];
       if (faceNeeded && e.face !== faceNeeded) continue;
-      var list = e.products && e.products[kind];
-      if (list && list.length) return { list: list.slice(), date: e.date };
+      return { list: ((e.products && e.products[kind]) || []).slice(), date: e.date };
     }
     return null;
   }
@@ -2683,11 +2794,13 @@
 
   function blankDraft() {
     var now = new Date();
-    // 产品从照片上看不出来，而且基本天天一样 —— 默认沿用上一次，自己改
-    var sk = lastProducts('skincare', null);
+    // 产品从照片上看不出来，而且基本天天一样 —— 默认沿用上一次，自己改。
+    // 新草稿默认带妆（下面 face: 'makeup'），所以按带妆那条沿用；
+    // 切到素颜时 renderCompose 会按 _carriedFace 重新算一遍。
+    var sk = lastProducts('skincare', 'makeup');
     var mk = lastProducts('makeup', 'makeup');
-    var carried = { skincare: sk ? sk.list : [], makeup: mk ? mk.list : [] };
-    var prev = mk || sk;
+    var carried = { skincare: sk ? sk.list.slice() : [], makeup: mk ? mk.list.slice() : [] };
+    var prev = (mk && mk.list.length) ? mk : ((sk && sk.list.length) ? sk : null);
 
     return {
       photos: [],
@@ -2723,12 +2836,15 @@
        建草稿可能发生在云端数据还没加载完的时候，那时候翻不到历史记录，
        结果就是「彩妆没有默认带进来」。
        只在你还没动过产品栏时补，动过就不碰。 */
-    if (!d.editingId && !d._touchedProducts) {
-      var sk0 = lastProducts('skincare', null);
+    if (!d.editingId && !d._touchedProducts && d._carriedFace !== d.face) {
+      var sk0 = lastProducts('skincare', d.face);      // 素颜沿用素颜的，带妆沿用带妆的
       var mk0 = lastProducts('makeup', 'makeup');
-      if (!(d.products.skincare || []).length && sk0) d.products.skincare = sk0.list.slice();
-      if (!(d.products.makeup || []).length && mk0) d.products.makeup = mk0.list.slice();
-      if (!d.carriedFrom && (mk0 || sk0)) d.carriedFrom = (mk0 || sk0).date;
+      d.products.skincare = sk0 ? sk0.list.slice() : [];
+      d.products.makeup = d.face === 'bare' ? [] : (mk0 ? mk0.list.slice() : []);
+      // 空的沿用不写来源 —— 「沿用 9 月 4 日」后面跟一片空白只会让人以为坏了
+      var src = (sk0 && sk0.list.length) ? sk0 : ((mk0 && mk0.list.length) ? mk0 : null);
+      d.carriedFrom = src ? src.date : null;
+      d._carriedFace = d.face;   // 记下这次是按哪种 face 算的，改了 face 要重算
     }
 
     host.innerHTML =
@@ -2795,10 +2911,14 @@
       (d.face === 'makeup' ? productField(d) : '') +
 
       /* ---- 以下折叠 ---- */
-      '<button class="more-toggle" id="moreToggle" type="button" aria-expanded="false">' +
+      /* 展开状态存在草稿里，不能只存在 DOM 上 —— 点一下产品就 renderCompose()
+         整个重画，DOM 上的展开状态跟着没了，「更多」啪一下合回去。
+         素颜时产品栏就在这个折叠区里，等于每选一件都要重新展开一次。 */
+      '<button class="more-toggle' + (d._moreOpen ? ' open' : '') + '" id="moreToggle" ' +
+        'type="button" aria-expanded="' + (d._moreOpen ? 'true' : 'false') + '">' +
         '更多（光线、评分、产品）<span class="ml-caret">▾</span>' +
       '</button>' +
-      '<div id="moreBox" hidden>' +
+      '<div id="moreBox"' + (d._moreOpen ? '' : ' hidden') + '>' +
 
         '<div class="field"><label>光线条件</label>' +
           '<input type="text" id="fLight" placeholder="比如：窗边自然光" value="' + esc(d.light) + '">' +
@@ -2834,6 +2954,7 @@
       box.hidden = open;
       this.setAttribute('aria-expanded', String(!open));
       this.classList.toggle('open', !open);
+      if (state.draft) state.draft._moreOpen = !open;   // 重画后还得是这个状态
     });
 
     $('#picker', host).addEventListener('click', function (ev) {
@@ -2937,7 +3058,8 @@
         var b = ev.target.closest('button');
         if (!b) return;
         d[key] = b.dataset.v;
-        if (redraw) { renderCompose(); $('#moreToggle').click(); return; }
+        // 展开状态现在存在草稿里，重画会自己保持，不用再补一下 click
+        if (redraw) { renderCompose(); return; }
         $$(sel + ' button', host).forEach(function (x) { x.classList.remove('on'); });
         b.classList.add('on');
       });
@@ -3302,8 +3424,25 @@
       renderQueue();
       return GitStore.updateJSON('entries.json', function (remote) {
         var entries = (remote || []).slice();
-        var at = entries.findIndex(function (x) { return x.id === job.entry.id; });
-        if (at >= 0) entries[at] = job.entry; else entries.push(job.entry);
+        var e = job.entry;
+        var at = entries.findIndex(function (x) { return x.id === e.id; });
+
+        /* 新记录撞上云端已有的同号 —— makeEntryId 只在【这台设备内存里】
+           找空号，所以上一条没传成功、或者别的设备刚写进去的，这边都看不见，
+           于是又发了同一个 id。直接 entries[at] = e 会把对方那条抹掉，
+           所以另起一个号，两条都留住。 */
+        if (at >= 0 && job.isNew && entries[at].at !== e.at) {
+          var base = e.date.replace(/-/g, ''), used = {};
+          entries.forEach(function (x) { if (x.date === e.date) used[x.id] = 1; });
+          for (var n = 1; n < 100; n++) {
+            var nid = base + '-' + String(n).padStart(2, '0');
+            if (!used[nid]) { e = Object.assign({}, e, { id: nid }); break; }
+          }
+          entries.push(e);
+          return entries;
+        }
+
+        if (at >= 0) entries[at] = e; else entries.push(e);
         return entries;
       }, job.message);
     });
@@ -3428,6 +3567,7 @@
     enqueue({
       entry: entry,
       files: files,
+      isNew: !d.editingId,   // 撞号时要不要另起一个号，看这个
       label: fmtDate(d.date) + ' ' + fmtTime(d.at),
       message: (d.editingId ? '修改 ' : '记录 ') + d.date + '（' + id + '）',
       state: 'queued',
@@ -4548,7 +4688,9 @@
     { k: 'price',    label: '价格',   type: 'number', unit: '元' },
     { k: 'size',     label: '规格',   type: 'text',   ph: '如 50ml / 30g' },
     { k: 'variants', label: '款式/色号', type: 'text', ph: '顿号分隔，如 积雪草、依克多因' },
-    { k: 'spec',     label: '成分/参数', type: 'text', ph: '如 SPF50+ PA++++' },
+    /* 这一栏是包装上印的【卖点参数】，一句话那种。
+       全成分表另有一块（inci）——两个都叫「成分」会分不清该往哪填。 */
+    { k: 'spec',     label: '参数',   type: 'text',   ph: '如 SPF50+ PA++++' },
     { k: 'start',    label: '购买/开始', type: 'date' },
     { k: 'end',      label: '停用',   type: 'date' },
     { k: 'note',     label: '备注',   type: 'text' },
@@ -4639,6 +4781,34 @@
         }).join('') + '</div>'
       : '';
 
+    /* 成分单独一块，不塞进上面那排单行输入框 ——
+       全成分表动辄三四十个词，一行输入框里看不到第三个之后的东西，
+       而它的用处恰恰是【整段拿出来比对】：几件产品一起烂脸时，
+       找共同成分是唯一能收敛的线索。
+       文字和照片都收：瓶身背面来不及抄，先拍下来也算存住了。 */
+    var inciShots = p.inciPhotos || [];
+    var inciHTML = '<div class="pd-hist">' +
+      '<b>成分' +
+        '<button class="ph-add" data-inci-edit="' + esc(p.id) + '" type="button" ' +
+          'aria-label="写成分表">✎</button>' +
+        '<button class="ph-add" data-inci-shoot="' + esc(p.id) + '" type="button" ' +
+          'aria-label="拍成分表">＋</button>' +
+      '</b>' +
+      (p.inci ? '<div class="inci-text">' + esc(p.inci) + '</div>' : '') +
+      (inciShots.length
+        ? '<div class="pc-shots">' + inciShots.map(function (path, i) {
+            return '<span class="pc-cell">' +
+              '<button class="pc-shot" type="button" data-inci-shot="' + i + '">' +
+                '<img data-key="' + esc(path) + '" alt=""></button>' +
+              '<button class="pc-del" type="button" data-inci-del="' + i + '" ' +
+                'aria-label="删掉这张">×</button>' +
+            '</span>';
+          }).join('') + '</div>'
+        : '') +
+      (p.inci || inciShots.length ? ''
+        : '<div class="tiny">✎ 贴全成分表（可以直接粘贴），＋ 拍瓶身背面那一段。</div>') +
+      '</div>';
+
     var box = el('<div class="prod-detail">' +
       (variantList(p).length
         ? '<div class="pd-vars">' + variantList(p).map(function (v) {
@@ -4654,7 +4824,7 @@
           '<button class="ie-ok" type="button">保存</button>' +
         '</div>' +
       '</div>' +
-      hist + buyHTML +
+      hist + buyHTML + inciHTML +
       /* 照片小节：＋ 挂在标题右边，识别到的信息自动补进产品和购买记录 */
       // 归类改不了的话，自动猜错就只能一直错着
       '<div class="pd-cats">' +
@@ -4724,6 +4894,14 @@
       if (rn) return openRenameBox(rn.dataset.rename, rn.closest('.pd-rename'));
       var mg = ev.target.closest('[data-merge]');
       if (mg) return openMergePicker(mg.dataset.merge, mg.closest('.pd-tools'));
+      var ie = ev.target.closest('[data-inci-edit]');
+      if (ie) return openInciEditor(id, ie.closest('.pd-hist'));
+      var ish = ev.target.closest('[data-inci-shoot]');
+      if (ish) return pickInciShots(id);
+      var ix = ev.target.closest('[data-inci-del]');
+      if (ix) return deleteInciShot(id, Number(ix.dataset.inciDel));
+      var iv = ev.target.closest('[data-inci-shot]');
+      if (iv) return openPhotoList(p.inciPhotos, Number(iv.dataset.inciShot));
       var sx = ev.target.closest('[data-shot-del]');
       if (sx) return deleteProductShot(id, Number(sx.dataset.shotDel));
       var sp = ev.target.closest('[data-shot]');
@@ -4850,6 +5028,13 @@
       purchases: buys,
       photos: (to.photos || []).concat(
         (from.photos || []).filter(function (p) { return (to.photos || []).indexOf(p) < 0; })),
+      /* 同一件产品的不同色号，成分表通常也是同一份 —— 留已有的那份，
+         没有才拿被并进来的。照片两边都留：色号之间偶尔真的有差别。 */
+      inci: to.inci || from.inci,
+      inciPhotos: (to.inciPhotos || []).concat(
+        (from.inciPhotos || []).filter(function (p) {
+          return (to.inciPhotos || []).indexOf(p) < 0;
+        })),
       reviews: (to.reviews || []).concat(from.reviews || []),
       start: [to.start, from.start].filter(Boolean).sort()[0] || to.start,
     });
@@ -5172,6 +5357,102 @@
     }).catch(function (e) {
       statusEl.textContent = '失败：' + (e.message || e);
     });
+  }
+
+
+  /* ---- 全成分表 ---- */
+
+  /* 用 textarea 而不是那排单行输入框：成分表是要整段读、整段比的东西，
+     换行也得留住 —— 官网复制下来的顺序本身就是信息（含量从高到低）。 */
+  function openInciEditor(pid, anchor) {
+    if (document.getElementById('inci-edit')) return;
+    var p = allProducts().filter(function (x) { return x.id === pid; })[0];
+    if (!p) return;
+
+    var box = el('<div class="inline-edit" id="inci-edit">' +
+      '<div class="tiny ie-lab" style="margin-top:0">全成分表（照瓶身抄，或直接粘贴）</div>' +
+      '<textarea id="inci-txt" style="min-height:130px" ' +
+        'placeholder="水、甘油、丁二醇、烟酰胺、透明质酸钠……">' +
+        esc(p.inci || '') + '</textarea>' +
+      '<div class="ie-act">' +
+        '<button class="ie-cancel" type="button">取消</button>' +
+        '<button class="ie-ok" type="button">保存</button>' +
+      '</div>' +
+    '</div>');
+    anchor.appendChild(box);
+    box.querySelector('#inci-txt').focus();
+
+    box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
+    box.querySelector('.ie-ok').addEventListener('click', function () {
+      var v = box.querySelector('#inci-txt').value.trim();
+      /* 先 blur 再移除：只移除的话 activeElement 还停在 textarea 上，
+         isEditing() 判定为真，刷新被欠下 —— 表现是「点保存没反应」。 */
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      box.remove();
+      saveProducts(allProducts().map(function (x) {
+        return x.id === pid ? Object.assign({}, x, { inci: v || undefined }) : x;
+      }), '产品库：' + shortName(p) + ' 的成分表')
+        .then(function () { toast('已保存'); })
+        .catch(function (e) { toast('失败：' + (e.message || e), true); });
+    });
+  }
+
+  /* 成分表照片和「识别用的原图」分开存：那边是拿去认品牌品名的，
+     这边是留着回头逐条看的，混在一起两边都不好找。 */
+  function pickInciShots(pid) {
+    var inp = $('#docInput');
+    if (!inp) return;
+    inp.onchange = function () {
+      addInciShots(pid, this.files);
+      this.value = '';
+    };
+    inp.click();
+  }
+
+  function addInciShots(pid, files) {
+    if (!files || !files.length) return;
+    var p = allProducts().filter(function (x) { return x.id === pid; })[0];
+    if (!p) return;
+    var n = files.length;
+    toast('照片处理中…（' + n + ' 张）');
+
+    Promise.all(Array.prototype.slice.call(files).map(function (f) {
+      return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+    })).then(function (blobs) {
+      var stamp = Date.now().toString(36);
+      var shots = blobs.map(function (b, i) {
+        return { path: 'products/' + pid + '-inci-' + stamp + '-' + i + '.jpg', blob: b };
+      });
+      var next = allProducts().map(function (x) {
+        if (x.id !== pid) return x;
+        return Object.assign({}, x, {
+          inciPhotos: (x.inciPhotos || []).concat(shots.map(function (s) { return s.path; })),
+        });
+      });
+      // saveProducts 会先把图单独提交，再改 settings.json
+      return saveProducts(next, '产品库：' + shortName(p) + ' 的成分表照片', shots);
+    }).then(function () {
+      toast('已存下 ' + n + ' 张');
+    }).catch(function (e) {
+      toast('照片没存上：' + (e.message || e), true);
+    });
+  }
+
+  function deleteInciShot(pid, idx) {
+    var p = allProducts().filter(function (x) { return x.id === pid; })[0];
+    if (!p || !p.inciPhotos || !p.inciPhotos[idx]) return;
+    var path = p.inciPhotos[idx];
+    if (!confirm('删掉这张成分表照片？')) return;
+
+    var next = allProducts().map(function (x) {
+      if (x.id !== pid) return x;
+      return Object.assign({}, x, {
+        inciPhotos: x.inciPhotos.filter(function (_, i) { return i !== idx; }),
+      });
+    });
+    saveProducts(next, '产品库：删掉一张成分表照片')
+      .then(function () { return GitStore.commitDelete([path], '删除照片 ' + path); })
+      .catch(function (e) { toast('删除失败：' + (e.message || e), true); });
   }
 
 

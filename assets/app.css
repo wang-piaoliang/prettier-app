@@ -894,6 +894,16 @@ textarea { min-height: 64px; }
 }
 .prod-score i { font-style: normal; font-size: 11px; opacity: .6; }
 
+/* 全成分表：整段照抄进来的，换行必须留住 ——
+   官网复制下来的顺序本身是信息（含量从高到低），重排就读不出来了。
+   长英文成分名要能断行，否则一个 Butyrospermum Parkii 就把卡片撑出屏幕。 */
+.inci-text {
+  margin-top: 2px;
+  font-family: var(--sans); font-size: 12px; line-height: 1.65;
+  color: var(--ink-faint);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
 /* 时间线顶栏：只留一个动作，不再堆文字 */
 .tl-bar { justify-content: flex-end; padding-bottom: 12px; }
 
@@ -1282,6 +1292,8 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
   margin: 3px 0 0 85px;
   font-family: var(--sans); font-size: 12px; line-height: 1.6; color: var(--ink-faint);
 }
+/* 记录里的照片跟备注对齐到同一列，左边留给日期 */
+.care-row .pc-shots { margin: 6px 0 2px 85px; }
 #c-edit select, #c-edit input[type="text"] {
   width: 100%; padding: 7px 10px; border-radius: 8px;
   border: 1px solid var(--line); background: var(--card);
