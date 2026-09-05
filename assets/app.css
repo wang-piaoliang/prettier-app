@@ -712,6 +712,13 @@ input:focus, textarea:focus, select:focus {
   background: var(--card); color: var(--ink-soft);
   font-family: var(--sans); font-size: 12px; padding: 5px 13px; cursor: pointer;
 }
+/* 第二个按钮紧挨着第一个：margin-left:auto 会把两个按钮推开分居两端 */
+.tl-bar button + button { margin-left: 0; }
+.tl-bar button.icon-add {
+  width: 30px; height: 30px; padding: 0; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; color: var(--accent-ink);
+}
 
 
 /* ---------- 设置 ---------- */
@@ -1646,3 +1653,79 @@ button.pill {
 
 /* 编辑框里给每块起个名字：一排「轻 中 重」单摆在那儿认不出是干嘛的 */
 .inline-edit .ie-lab { margin: 14px 0 6px; letter-spacing: .5px; }
+
+
+/* ---------- 产品页 · 花费统计 ---------- */
+.sp-box {
+  border: 1px solid var(--line); border-radius: 14px;
+  background: var(--card); box-shadow: var(--shadow);
+  padding: 14px 16px 16px;
+}
+.sp-tabs { display: flex; gap: 6px; overflow-x: auto; margin: -2px -4px 12px; padding: 2px 4px 4px; }
+.sp-tabs::-webkit-scrollbar { display: none; }
+.sp-tabs button {
+  flex: 0 0 auto; border: 1px solid var(--line-2); border-radius: 20px;
+  background: none; color: var(--ink-soft);
+  font-family: var(--sans); font-size: 12px; padding: 4px 12px; cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.sp-tabs button.on { background: var(--accent-ink); border-color: var(--accent-ink); color: #fff; }
+
+.sp-total {
+  font-family: var(--serif); font-size: 30px; line-height: 1.1;
+  color: var(--accent-ink); font-variant-numeric: tabular-nums;
+}
+.sp-total em {
+  display: block; font-style: normal; font-family: var(--sans);
+  font-size: 12px; color: var(--ink-faint); margin-top: 5px; letter-spacing: .02em;
+}
+.sp-line {
+  font-family: var(--sans); font-size: 12px; color: var(--ink-faint);
+  margin: 8px 0 14px; font-variant-numeric: tabular-nums;
+}
+
+.sp-chart { display: flex; align-items: flex-end; gap: 5px; height: 86px; margin-bottom: 4px; }
+.sp-col {
+  flex: 1; min-width: 0; height: 100%; padding: 0; border: none; background: none;
+  cursor: pointer; display: flex; flex-direction: column; justify-content: flex-end;
+}
+.sp-col.dim { opacity: .34; }
+.sp-col .sp-bars { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; }
+.sp-col i { display: block; width: 100%; }
+.sp-col i.sk { background: var(--accent); }
+.sp-col i.mk { background: var(--watch); border-radius: 3px 3px 0 0; }
+.sp-col i.sk:first-child { border-radius: 3px 3px 0 0; }
+.sp-col em {
+  font-style: normal; font-family: var(--sans); font-size: 10px;
+  color: var(--ink-faint); margin-top: 5px; font-variant-numeric: tabular-nums;
+}
+
+.sp-rows { margin-top: 12px; }
+.sp-row { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; }
+.sp-nm {
+  flex: 0 0 34%; min-width: 0; font-family: var(--sans); font-size: 12px;
+  color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sp-nm span { color: var(--ink-faint); font-size: 10px; margin-left: 5px; }
+.sp-track { flex: 1; height: 6px; border-radius: 3px; background: var(--card-2); overflow: hidden; }
+.sp-track i { display: block; height: 100%; border-radius: 3px; }
+.sp-track i.sk { background: var(--accent); }
+.sp-track i.mk { background: var(--watch); }
+.sp-track i.ot { background: var(--line-2); }
+.sp-v {
+  flex: 0 0 auto; font-family: var(--sans); font-size: 12px; color: var(--ink-soft);
+  font-variant-numeric: tabular-nums; min-width: 52px; text-align: right;
+}
+
+.sp-note {
+  margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line);
+  font-family: var(--sans); font-size: 11px; line-height: 1.6; color: var(--ink-faint);
+}
+
+/* 清空购买记录：破坏性动作，压到最右、最淡 */
+.ph-clear {
+  margin-left: auto; padding: 0 2px;
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-faint); font-family: var(--sans); font-size: 11px; opacity: .6;
+}
+.ph-clear:active { color: var(--focus); opacity: 1; }

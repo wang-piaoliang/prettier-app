@@ -4292,13 +4292,16 @@
           list.filter(inUse).length + ' 件在用' +
           (wish.length ? ' · ' + wish.length + ' 件待尝试' : '') + '</span>' +
         '<button id="scanBtn" type="button">＋ 拍照识别</button>' +
+        /* 手动添加原来在整页最底下，得翻到底才看得见。
+           她 2026-09-05：「手动添加产品删掉，放在最上面，有个加号就行」 */
+        '<button id="addProdBtn" class="icon-add" type="button" ' +
+          'aria-label="手动添加一件" title="手动添加一件">＋</button>' +
       '</div>' +
       /* 三十多件之后，翻列表找一支眼线笔比搜一下慢多了。
          品名、品牌、款式、类别都能搜 —— 记不清全名时按品牌找也行。 */
       '<input type="search" id="prodSearch" placeholder="搜产品（品名 / 品牌 / 款式）" ' +
         'value="' + esc(prodQuery) + '" autocapitalize="off" autocorrect="off">' +
-      '<div id="scanOut"></div>' + body +
-      '<button class="more-toggle" id="addProdBtn" type="button">手动添加一件</button>';
+      '<div id="scanOut"></div>' + body + spendHTML();
 
     bindProdDrag(host);
     var sBox = $('#prodSearch', host);
@@ -4314,8 +4317,10 @@
     }
     $('#scanBtn', host).addEventListener('click', function () { $('#prodInput').click(); });
     $('#addProdBtn', host).addEventListener('click', function () {
-      addProductManually(this);
+      /* ⚠ 按钮现在在 .tl-bar 里，那是个 flex 行，表单插进去会把它撑坏 —— 插到搜索框下面 */
+      addProductManually(this, $('#prodSearch', host));
     });
+    bindSpend(host);
 
     if (!host.dataset.bound) {
       host.dataset.bound = '1';
@@ -4775,8 +4780,16 @@
        只留一个「购买时间」字段是不够的。 */
     var buys = sortedBuys(p);
     var buyHTML = '<div class="pd-hist">' +
-      '<b>购买记录<button class="ph-add" data-buy-add="' + esc(p.id) + '" ' +
-        'type="button" aria-label="记一次购买">＋</button></b>' +
+      '<b>购买记录' +
+        '<button class="ph-add" data-buy-add="' + esc(p.id) + '" ' +
+          'type="button" aria-label="记一次购买">＋</button>' +
+        /* 识别错了一堆的时候，一条条删太费劲 —— 给个一键清空。
+           破坏性动作，所以放最右、压淡，并且要二次确认。 */
+        (buys.length
+          ? '<button class="ph-clear" data-buy-clear="' + esc(p.id) + '" ' +
+            'type="button" aria-label="清空购买记录">清空</button>'
+          : '') +
+      '</b>' +
       (buys.length
         ? buys.map(function (b, i) {
             return '<div class="prod-review">' +
@@ -4907,6 +4920,8 @@
       if (dl) return deleteReview(id, Number(dl.dataset.rvDel));
       var ba = ev.target.closest('[data-buy-add]');
       if (ba) return openBuyEditor(id, ba);
+      var bc = ev.target.closest('[data-buy-clear]');
+      if (bc) return clearBuys(bc.dataset.buyClear);
       var be = ev.target.closest('[data-buy-edit]');
       if (be) return openBuyEditor(id, be.closest('.prod-review'), Number(be.dataset.buyEdit));
       var bd = ev.target.closest('[data-buy-del]');
@@ -5154,6 +5169,29 @@
 
 
   /* 产品被删掉之后，把记录里指向它的引用一并摘掉。 */
+
+  /* 清空某件产品的全部购买记录。
+     识别认错一堆的时候，一条条删太费劲。
+     起用日期跟着回到「没有购买记录」的状态 —— 它本来就是从最早那单算出来的。 */
+  function clearBuys(pid) {
+    var p = allProducts().filter(function (x) { return x.id === pid; })[0];
+    if (!p) return;
+    var n = (p.purchases || []).length;
+    if (!n) return;
+    if (!confirm('清空「' + shortName(p) + '」的全部 ' + n + ' 条购买记录？\n照片和评价不动。')) return;
+
+    var next = allProducts().map(function (x) {
+      if (x.id !== pid) return x;
+      var y = Object.assign({}, x);
+      delete y.purchases;
+      delete y.start;          // 起用日期是从最早那单推出来的，一起撤掉
+      return y;
+    });
+    saveProducts(next, '产品库：清空 ' + shortName(p) + ' 的购买记录')
+      .then(function () { toast('已清空 ' + n + ' 条'); })
+      .catch(function (e) { toast('失败：' + (e.message || e), true); });
+  }
+
   function clearProductRefs(pid) {
     var strip = function (list) {
       return (list || []).filter(function (t) { return String(t).split('#')[0] !== pid; });
@@ -5208,11 +5246,154 @@
   var newShots = null;
   var newBuys = null;      // 刚才那几张照片里认出来的购买记录
 
-  function addProductManually(btn) {
+  /* ──────────────── 花费统计（产品页最底下） ────────────────
+     她 2026-09-05：「统计下我买的主要产品花的钱」「还可以看按年度的」。
+     ⚠ 只统计 purchases 里填了价格的记录 —— 库里有一半产品还没登过价，
+     所以这里显示的永远是**下限**，那句提示不能省。 */
+
+  var spendYear = 'all';   // 'all' 或 '2024' 这样的年份
+
+  function spendBuys() {
+    var out = [];
+    allProducts().forEach(function (p) {
+      var k = kindOf(p);
+      var nm = p.short || p.name || '未命名';
+      (p.purchases || []).forEach(function (q) {
+        if (!q || !q.date) return;
+        out.push({ d: q.date, y: String(q.date).slice(0, 4), p: +q.price || 0, n: nm, k: k });
+      });
+    });
+    out.sort(function (a, b) { return a.d < b.d ? -1 : a.d > b.d ? 1 : 0; });
+    return out;
+  }
+
+  function yuan(n) { return '¥' + Math.round(n).toLocaleString('en-US'); }
+
+  function spendHTML() {
+    var buys = spendBuys();
+    if (!buys.length) return '';
+
+    var years = [];
+    buys.forEach(function (b) { if (years.indexOf(b.y) < 0) years.push(b.y); });
+    years.sort();
+    if (spendYear !== 'all' && years.indexOf(spendYear) < 0) spendYear = 'all';
+
+    var yTot = {}, maxY = 0;
+    years.forEach(function (y) {
+      var v = buys.filter(function (b) { return b.y === y; });
+      yTot[y] = {
+        all: v.reduce(function (t, b) { return t + b.p; }, 0),
+        skincare: v.reduce(function (t, b) { return t + (b.k === 'skincare' ? b.p : 0); }, 0),
+        makeup: v.reduce(function (t, b) { return t + (b.k === 'makeup' ? b.p : 0); }, 0)
+      };
+      if (yTot[y].all > maxY) maxY = yTot[y].all;
+    });
+    if (!maxY) maxY = 1;
+
+    var isAll = spendYear === 'all';
+    var cur = isAll ? buys : buys.filter(function (b) { return b.y === spendYear; });
+    var total = cur.reduce(function (t, b) { return t + b.p; }, 0);
+
+    /* 按产品聚合 */
+    var agg = {};
+    cur.forEach(function (b) {
+      var a = agg[b.n] || (agg[b.n] = { n: b.n, k: b.k, p: 0, c: 0 });
+      a.p += b.p; a.c++;
+    });
+    var list = Object.keys(agg).map(function (k) { return agg[k]; })
+      .sort(function (x, y) { return y.p - x.p; });
+    var mx = list.length ? (list[0].p || 1) : 1;
+
+    /* 覆盖率：库里多少件还没登过价 */
+    var withBuy = 0;
+    allProducts().forEach(function (p) { if ((p.purchases || []).length) withBuy++; });
+    var nAll = allProducts().length;
+
+    /* 年份切换 */
+    var tabs = '<div class="sp-tabs">' +
+      ['all'].concat(years.slice().reverse()).map(function (y) {
+        return '<button type="button" data-y="' + y + '"' +
+          (y === spendYear ? ' class="on"' : '') + '>' + (y === 'all' ? '全部' : y) + '</button>';
+      }).join('') + '</div>';
+
+    /* 年度柱图 */
+    var chart = '<div class="sp-chart">' + years.map(function (y) {
+      var t = yTot[y], dim = (!isAll && y !== spendYear) ? ' dim' : '';
+      return '<button type="button" class="sp-col' + dim + '" data-y="' + y + '">' +
+        '<span class="sp-bars">' +
+          (t.makeup > 0 ? '<i class="mk" style="height:' + (t.makeup / maxY * 100) + '%"></i>' : '') +
+          (t.skincare > 0 ? '<i class="sk" style="height:' + (t.skincare / maxY * 100) + '%"></i>' : '') +
+        '</span>' +
+        '<em>' + y.slice(2) + '</em></button>';
+    }).join('') + '</div>';
+
+    /* 排行：前 5 件 + 其余合并 */
+    var top = list.slice(0, 5), rest = list.slice(5);
+    var restSum = rest.reduce(function (t, a) { return t + a.p; }, 0);
+    var bars = top.map(function (a) {
+      return '<div class="sp-row"><div class="sp-nm">' + esc(a.n) +
+        '<span>' + a.c + ' 笔</span></div>' +
+        '<div class="sp-track"><i class="' + (a.k === 'makeup' ? 'mk' : 'sk') +
+          '" style="width:' + (a.p / mx * 100).toFixed(1) + '%"></i></div>' +
+        '<div class="sp-v">' + yuan(a.p) + '</div></div>';
+    }).join('');
+    if (rest.length) {
+      bars += '<div class="sp-row"><div class="sp-nm">其余 ' + rest.length + ' 件</div>' +
+        '<div class="sp-track"><i class="ot" style="width:' + (restSum / mx * 100).toFixed(1) + '%"></i></div>' +
+        '<div class="sp-v">' + yuan(restSum) + '</div></div>';
+    }
+
+    var sk = cur.reduce(function (t, b) { return t + (b.k === 'skincare' ? b.p : 0); }, 0);
+    var mk = cur.reduce(function (t, b) { return t + (b.k === 'makeup' ? b.p : 0); }, 0);
+    var sp = (sk + mk) > 0 ? Math.round(sk / (sk + mk) * 100) : 0;
+
+    var sub;
+    if (isAll) {
+      sub = buys[0].d.slice(0, 7).replace('-', '.') + ' – ' +
+            buys[buys.length - 1].d.slice(0, 7).replace('-', '.');
+    } else {
+      var i = years.indexOf(spendYear);
+      if (i > 0 && yTot[years[i - 1]].all > 0) {
+        var pct = Math.round((total - yTot[years[i - 1]].all) / yTot[years[i - 1]].all * 100);
+        sub = spendYear + ' 年 · 较 ' + years[i - 1] + ' ' + (pct >= 0 ? '+' : '') + pct + '%';
+      } else {
+        sub = spendYear + ' 年';
+      }
+    }
+
+    return '<div class="cat-head" id="spendHead">花费统计<span>' + buys.length + ' 笔</span></div>' +
+      '<div class="sp-box">' + tabs +
+        '<div class="sp-total">' + yuan(total) + '<em>' + esc(sub) + '</em></div>' +
+        '<div class="sp-line">' + cur.length + ' 笔 · ' + list.length + ' 件 · ' +
+          '护肤 ' + sp + '% / 彩妆 ' + (100 - sp) + '%</div>' +
+        chart + '<div class="sp-rows">' + bars + '</div>' +
+        '<div class="sp-note">⚠️ 这是下限：库里 ' + nAll + ' 件，只有 ' + withBuy +
+          ' 件有购买记录，没登价的没算进来。</div>' +
+      '</div>';
+  }
+
+  function bindSpend(host) {
+    var box = $('.sp-box', host);
+    if (!box) return;
+    box.addEventListener('click', function (ev) {
+      var b = ev.target.closest('[data-y]');
+      if (!b) return;
+      var y = b.dataset.y;
+      /* 再点一次已选中的年份 = 回到全部，省一次来回 */
+      spendYear = (y === spendYear) ? 'all' : y;
+      renderProducts();
+      var head = $('#spendHead');
+      if (head) head.scrollIntoView({ block: 'start' });
+    });
+  }
+
+  function addProductManually(btn, anchor) {
+    /* anchor = 表单插在谁后面。按钮挪进 .tl-bar 之后就不能再插在按钮后面了。 */
+    var at = anchor || btn;
     newShots = null;
     newBuys = null;
-    if (btn.nextElementSibling && btn.nextElementSibling.classList.contains('inline-edit')) {
-      return btn.nextElementSibling.remove();
+    if (at.nextElementSibling && at.nextElementSibling.classList.contains('inline-edit')) {
+      return at.nextElementSibling.remove();
     }
     var rows = PROD_FIELDS.map(function (f) {
       return '<label class="pd-row"><span>' + esc(f.label) + '</span>' +
@@ -5242,7 +5423,7 @@
         '<button class="ie-cancel" type="button">取消</button>' +
         '<button class="ie-ok" type="button">入库</button>' +
       '</div></div>');
-    btn.insertAdjacentElement('afterend', box);
+    at.insertAdjacentElement('afterend', box);
 
     var kind = 'skincare';
     var newStatus = 'using';
@@ -5378,9 +5559,17 @@
 
   /* 一次识别可能带出好几单：订单列表截图上同一件东西回购了三次。
      buysFrom 把 purchases 数组和单条字段合到一起，都变成购买记录。 */
+  var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+  /* ⚠ 没有下单日期就不算一条购买记录。
+     原来是 `b.date || todayISO()` —— 模型没读到日期就拿今天顶上，
+     结果库里混进「2026-08-17」「2026-09-05」这种其实是入库日/识别日的假记录，
+     看着跟真的一样，翻历史时会误导。宁可少一条也不记假的。 */
   function buysFrom(x) {
-    var out = (x.purchases || []).map(function (b) {
-      var one = { date: b.date || todayISO(), at: nowLocal() };
+    var out = (x.purchases || []).filter(function (b) {
+      return b && DATE_RE.test(String(b.date || ''));
+    }).map(function (b) {
+      var one = { date: b.date, at: nowLocal() };
       if (b.price != null) one.price = b.price;
       if (b.size) one.size = b.size;
       if (b.spec) one.spec = b.spec;
@@ -5391,6 +5580,17 @@
     var single = buyFrom(x);
     if (single && !out.length) out.push(single);
     return out;
+  }
+
+  // 认出了金额、却没认出日期 —— 这种要单独告诉她，不能悄悄吞掉
+  function buysMissingDate(x) {
+    var n = (x.purchases || []).filter(function (b) {
+      return b && !DATE_RE.test(String(b.date || '')) &&
+             (b.price != null || b.size || b.where);
+    }).length;
+    if (!n && !DATE_RE.test(String(x.boughtAt || '')) &&
+        (x.price != null || x.size || x.where)) n = 1;
+    return n;
   }
 
   // 起用日期＝已知购买记录里最早的那天
@@ -5405,7 +5605,9 @@
   function buyFrom(x) {
     var price = x.price != null && x.price !== '' ? Number(x.price) : null;
     var size = x.size || '';
-    var date = /^\d{4}-\d{2}-\d{2}$/.test(x.boughtAt || '') ? x.boughtAt : todayISO();
+    // 同上：日期读不出来就不生成购买记录
+    if (!DATE_RE.test(String(x.boughtAt || ''))) return null;
+    var date = x.boughtAt;
     if (price == null && !size && !x.where) return null;
     var b = { date: date, at: nowLocal() };   // at 是记录动作的时间点，展示只用 date
     if (price != null && !isNaN(price)) b.price = price;
@@ -5512,7 +5714,7 @@
   }
 
   function shootProductJob(pid, list, step) {
-    var added = 0, filled = 0, hits = 0;
+    var added = 0, filled = 0, hits = 0, noDate = 0;
 
     return list.reduce(function (prev, f, i) {
       return prev.then(function () {
@@ -5531,6 +5733,7 @@
               all.forEach(function (y) {
                 var more = buysFrom(y);
                 if (more.length) buys = mergeBuys(buys, more).list;
+                noDate += buysMissingDate(y);
               });
             }
             return { path: path, blob: blob, fields: x || null, buys: buys };
@@ -5571,6 +5774,8 @@
       var say = [];
       if (added) say.push('记下 ' + added + ' 笔购买');
       if (filled) say.push('补全 ' + filled + ' 笔');
+      // 认出了金额却没认出日期的，明说跳过了，别让人以为都记上了
+      if (noDate) say.push('有 ' + noDate + ' 笔没读到日期，没记（可手动补）');
       toast(say.length ? say.join('，')
         : (hits ? '这些单之前都记过了' : '照片已存下，没认出购买信息'));
     });
