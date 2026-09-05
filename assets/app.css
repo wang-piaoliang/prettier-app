@@ -1447,8 +1447,30 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
 .section-title.fold.closed { opacity: .55; }
 
 /* 产品详情里的归类切换：比正常分段控件小一号 */
-.pd-cats { margin-top: 10px; }
-.segmented.sm button { padding: 5px 0; font-size: 12px; }
+/* 归类：一排小标签，不是撑满整行的大按钮。
+   ⚠ 别复用 .segmented —— 那套是给「素颜/带妆」这种主选择用的，
+   flex:1 + min-height:44px，放在详情里当次要设置体量太大。 */
+.pd-cats {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin-top: 10px;
+}
+.pc-lab {
+  font-family: var(--sans); font-size: 11.5px; color: var(--ink-faint);
+  margin-right: 2px;
+}
+.catpick { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.catpick.sub {
+  margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--line);
+}
+.ccip {
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 3px 9px; background: var(--card);
+  color: var(--ink-faint);
+  font-family: var(--sans); font-size: 11.5px; line-height: 1.5;
+}
+.ccip.on {
+  border-color: var(--accent); background: var(--accent-bg); color: var(--accent-ink);
+}
 
 /* ◎ 这个字形本身就比 ↻ ◔ ⌄ 大一圈，单独压小一点才在一条线上 */
 #settingsBtn { font-size: 14px; }
@@ -1563,7 +1585,8 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
 .memo-row .rv-edit { margin-top: 1px; }
 .todo-box {
   position: relative; flex: none; box-sizing: border-box;
-  width: 16px; height: 16px; margin-top: 3px; padding: 0;
+  /* 在右边和 ✎ × 排一起，所以留一点左间距把它和正文隔开 */
+  width: 16px; height: 16px; margin: 3px 2px 0 4px; padding: 0;
   border: 1px solid var(--line-2); border-radius: 5px; background: var(--card);
   -webkit-appearance: none; appearance: none; cursor: pointer;
 }

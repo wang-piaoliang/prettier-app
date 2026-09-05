@@ -2019,12 +2019,14 @@
           (done ? ' done' : '') + '" data-memo="' + esc(n.id) + '">' +
         '<div class="cr-top">' +
           '<b>' + esc(fmtDate((n.at || '').slice(0, 10))) + '</b>' +
+          '<span class="care-what memo-text">' + esc(n.text || '') + '</span>' +
+          /* ⚠ 勾选框放右边。夹在日期和正文之间会把正文往右顶，
+             待办行和普通随手记就成了两套缩进，同一列对不齐。 */
           (n.todo
             ? '<button class="todo-box' + (done ? ' on' : '') + '" type="button" ' +
                 'data-memo-check="' + esc(n.id) + '" aria-label="' +
                 (done ? '取消勾掉' : '勾掉') + '"></button>'
             : '') +
-          '<span class="care-what memo-text">' + esc(n.text || '') + '</span>' +
           '<button class="rv-edit" data-memo-edit="' + esc(n.id) + '" aria-label="改">✎</button>' +
           '<button class="rv-edit" data-memo-del="' + esc(n.id) + '" aria-label="删">×</button>' +
         '</div>' +
@@ -4853,18 +4855,21 @@
       /* 照片小节：＋ 挂在标题右边，识别到的信息自动补进产品和购买记录 */
       // 归类改不了的话，自动猜错就只能一直错着
       '<div class="pd-cats">' +
-        '<div class="segmented sm" data-catset="kind">' +
+        '<span class="pc-lab">归类</span>' +
+        '<span class="catpick" data-catset="kind">' +
           KINDS.map(function (k) {
-            return '<button type="button" data-v="' + k.key + '"' +
-              (kindOf(p) === k.key ? ' class="on"' : '') + '>' + esc(k.label) + '</button>';
+            return '<button type="button" class="ccip' +
+              (kindOf(p) === k.key ? ' on' : '') + '" data-v="' + k.key + '">' +
+              esc(k.label) + '</button>';
           }).join('') +
-        '</div>' +
+        '</span>' +
         ((SUBCATS[kindOf(p)] || []).length > 1
-          ? '<div class="segmented sm" data-catset="sub" style="margin-top:6px">' +
+          ? '<span class="catpick sub" data-catset="sub">' +
             SUBCATS[kindOf(p)].map(function (sc) {
-              return '<button type="button" data-v="' + esc(sc.key) + '"' +
-                (subCatOf(p).key === sc.key ? ' class="on"' : '') + '>' + esc(sc.label) + '</button>';
-            }).join('') + '</div>'
+              return '<button type="button" class="ccip' +
+                (subCatOf(p).key === sc.key ? ' on' : '') + '" data-v="' + esc(sc.key) + '">' +
+                esc(sc.label) + '</button>';
+            }).join('') + '</span>'
           : '') +
       '</div>' +
 
@@ -5480,74 +5485,94 @@
      5 张订单截图本来是 5 次回购，结果只落了 1 条购买记录，另外 4 单白传。
      产品扫描那边（scanProductsJob）早就改成一张一张了，这条路当时漏掉了。
      一张订单截图就对应一单，模型不用在多张之间猜谁是谁。 */
+  /* 给某一件产品补拍照片。
+
+     ⚠ 两条铁律都在这儿：
+     ① 一张一张送给模型（R-B）——一张订单截图 = 一单，别让它在多张之间猜。
+     ② **一张一张写进仓库**——原来是攒够 N 张最后存一次，
+        中途被打断（切页面、iOS 挂起 PWA）就全丢。2026-09-05 这样丢过 7 张。
+     现在最多丢正在处理的那一张。
+
+     整个过程放进后台队列：切到别的页面也照跑，进度显示在底部队列条上。 */
   function shootProduct(pid, files, statusEl) {
     if (!files || !files.length) return;
     if (!ensureKey()) return;
     var list = Array.prototype.slice.call(files);
-    var shots = [], buys = [], fields = {}, hits = 0;
-    statusEl.textContent = '识别中…';
+    var p0 = allProducts().filter(function (x) { return x.id === pid; })[0];
+    var who = p0 ? shortName(p0) : '产品';
 
-    list.reduce(function (prev, f, i) {
+    if (statusEl) statusEl.textContent = '已加入后台识别（' + list.length + ' 张）';
+    toast('已加入后台识别（' + list.length + ' 张）');
+
+    enqueue({
+      label: who + ' · ' + list.length + ' 张',
+      refreshView: 'products',
+      run: function (step) { return shootProductJob(pid, list, step); },
+    });
+  }
+
+  function shootProductJob(pid, list, step) {
+    var added = 0, filled = 0, hits = 0;
+
+    return list.reduce(function (prev, f, i) {
       return prev.then(function () {
+        step('第 ' + (i + 1) + '/' + list.length + ' 张');
         return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
       }).then(function (blob) {
-        // 文件名就是这张图的内容指纹：同一张再传一次，路径一样，不会存成两份
+        // 文件名是内容指纹：同一张再传一次，路径一样，不会挂成两张
         return photoPath('products/' + pid + '-', blob).then(function (path) {
-          shots.push({ path: path, blob: blob });
-          if (list.length > 1) statusEl.textContent = '识别中… ' + (i + 1) + '/' + list.length;
           return PrettierAI.identifyProducts([blob]).then(function (found) {
-            /* 这里是「给这一件补信息」，所以字段只认第一件，
-               但购买记录要把整张图上的都收下 —— 同一件回购多次是常事。 */
-            var all = found.products || [];
+            var all = (found && found.products) || [];
             var x = all[0];
-            if (!x) return;               // 这张没认出来，照片照存，接着看下一张
-            hits++;
-            ['brand', 'category', 'size', 'price', 'spec', 'note'].forEach(function (k) {
-              if (fields[k] === undefined && x[k]) fields[k] = x[k];
-            });
-            all.slice(1).forEach(function (y) {
-              var more = buysFrom(y);
-              if (more.length) buys = mergeBuys(buys, more).list;
-            });
-            // 一张订单列表上可能有好几单，全都要
-            var got2 = buysFrom(x);
-            // 同一单截了两张图，先在这一批里合掉
-            if (got2.length) buys = mergeBuys(buys, got2).list;
+            var buys = [];
+            if (x) {
+              hits++;
+              // 一张订单列表上可能有好几单，整张图上的都收下
+              all.forEach(function (y) {
+                var more = buysFrom(y);
+                if (more.length) buys = mergeBuys(buys, more).list;
+              });
+            }
+            return { path: path, blob: blob, fields: x || null, buys: buys };
+          }).catch(function () {
+            // 认不出来也要把照片存下 —— 图是当场传的，丢了补不回来
+            return { path: path, blob: blob, fields: null, buys: [] };
           });
         });
-      }).catch(function () { /* 单张失败不拖累整批 */ });
-    }, Promise.resolve()).then(function () {
-      var got = { added: 0, filled: 0 };
-      var next = allProducts().map(function (p) {
-        if (p.id !== pid) return p;
-        var add = {};
-        // 只补空的，你自己填过的不动
-        Object.keys(fields).forEach(function (k) {
-          if (p[k] === undefined || p[k] === '') add[k] = fields[k];
+      }).then(function (one) {
+        /* ⚠ 每张单独保存。攒到最后再存，中断一次就全没了。 */
+        var next = allProducts().map(function (p) {
+          if (p.id !== pid) return p;
+          var add = {};
+          if (one.fields) {
+            ['brand', 'category', 'size', 'price', 'spec', 'note'].forEach(function (k) {
+              if ((p[k] === undefined || p[k] === '') && one.fields[k]) add[k] = one.fields[k];
+            });
+          }
+          if (one.buys.length) {
+            var got = mergeBuys(p.purchases, one.buys);
+            if (got.added || got.filled) add.purchases = got.list;
+            added += got.added;
+            filled += got.filled;
+          }
+          var first = earliestBuy(add.purchases || p.purchases);
+          if (first && (!p.start || first < p.start)) add.start = first;
+          if ((p.photos || []).indexOf(one.path) < 0) {
+            add.photos = (p.photos || []).concat([one.path]);
+          }
+          return Object.assign({}, p, add);
         });
-        got = mergeBuys(p.purchases, buys);
-        if (got.added || got.filled) add.purchases = got.list;
-        // 翻到更早的订单，起用日期要跟着往前推
-        var first = earliestBuy(add.purchases || p.purchases);
-        if (first && (!p.start || first < p.start)) add.start = first;
-        // 已经有的那几张不再重复挂
-        var have = (p.photos || []).slice();
-        shots.forEach(function (s) { if (have.indexOf(s.path) < 0) have.push(s.path); });
-        add.photos = have;
-        return Object.assign({}, p, add);
+        return saveProducts(next, '产品库：补充第 ' + (i + 1) + '/' + list.length + ' 张',
+                            [{ path: one.path, blob: one.blob }]);
+      }).catch(function () {
+        // 单张失败不拖累后面的
       });
-
+    }, Promise.resolve()).then(function () {
       var say = [];
-      if (got.added) say.push('记下 ' + got.added + ' 笔购买');
-      if (got.filled) say.push('补全 ' + got.filled + ' 笔');
-      statusEl.textContent = say.length
-        ? say.join('，')
-        : (hits ? '这些单之前都记过了，没有新信息' : '照片已存下，没认出购买信息');
-      return saveProducts(next, '产品库：从照片补充信息', shots);
-    }).then(function () {
-      refresh('products');
-    }).catch(function (e) {
-      statusEl.textContent = '失败：' + (e.message || e);
+      if (added) say.push('记下 ' + added + ' 笔购买');
+      if (filled) say.push('补全 ' + filled + ' 笔');
+      toast(say.length ? say.join('，')
+        : (hits ? '这些单之前都记过了' : '照片已存下，没认出购买信息'));
     });
   }
 
