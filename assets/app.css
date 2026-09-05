@@ -844,6 +844,12 @@ textarea { min-height: 64px; }
   padding: 9px 11px;
 }
 .inline-edit input { font-size: 16px; }
+/* 全局的输入框内边距（12/14px、圆角 12）是按登录表单那种整页表单调的，
+   搬进页内编辑面板就太笨重 —— 旁边的标签和标签胶囊只有 12px，
+   一个 55px 高的输入框摆在中间像另一个 App 的控件。
+   字号不能跟着收（见上面那条 iOS 的警告），所以只收内边距和圆角。 */
+.inline-edit input,
+.inline-edit select { padding: 8px 11px; border-radius: 10px; }
 .ie-act { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
 .ie-act button {
   border: none; border-radius: 9px; padding: 7px 14px; cursor: pointer;
@@ -969,6 +975,13 @@ body.no-scroll { overflow: hidden; touch-action: none; }
 .w-row i { font-style: normal; color: var(--ink-faint); font-size: 12px; }
 .w-form { display: flex; gap: 8px; }
 .w-form input { flex: 1; min-width: 0; }
+/* 这一行里只有一个日期时，别把它拉成通栏。
+   日期是定长的东西，撑满整行就成了一条横幅 —— 加上 iOS 默认把日期居中显示，
+   看起来像个标题而不是一个输入框。体重和购买记录那两处日期是和别的字段共用一行的，
+   :only-child 不会碰到它们。 */
+.w-form input[type="date"]:only-child { flex: 0 0 auto; width: auto; }
+/* iOS 上 input[type=date] 的值默认居中，和其它左对齐的字段对不齐 */
+input[type="date"]::-webkit-date-and-time-value { text-align: left; }
 
 
 /* 兜底：页面永远不横向滚动。
