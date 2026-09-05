@@ -5370,6 +5370,32 @@
       .catch(function () { return fallback; });
   }
 
+  /* 一次识别可能带出好几单：订单列表截图上同一件东西回购了三次。
+     buysFrom 把 purchases 数组和单条字段合到一起，都变成购买记录。 */
+  function buysFrom(x) {
+    var out = (x.purchases || []).map(function (b) {
+      var one = { date: b.date || todayISO(), at: nowLocal() };
+      if (b.price != null) one.price = b.price;
+      if (b.size) one.size = b.size;
+      if (b.spec) one.spec = b.spec;
+      if (b.where) one.where = b.where;
+      return one;
+    });
+    // 顶层那组字段是「只有一单」时的写法，别重复算进去
+    var single = buyFrom(x);
+    if (single && !out.length) out.push(single);
+    return out;
+  }
+
+  // 起用日期＝已知购买记录里最早的那天
+  function earliestBuy(list) {
+    return (list || []).reduce(function (min, b) {
+      var d = b && b.date;
+      if (!d) return min;
+      return (!min || d < min) ? d : min;
+    }, null);
+  }
+
   function buyFrom(x) {
     var price = x.price != null && x.price !== '' ? Number(x.price) : null;
     var size = x.size || '';
@@ -5469,15 +5495,23 @@
           shots.push({ path: path, blob: blob });
           if (list.length > 1) statusEl.textContent = '识别中… ' + (i + 1) + '/' + list.length;
           return PrettierAI.identifyProducts([blob]).then(function (found) {
-            var x = (found.products || [])[0];
+            /* 这里是「给这一件补信息」，所以字段只认第一件，
+               但购买记录要把整张图上的都收下 —— 同一件回购多次是常事。 */
+            var all = found.products || [];
+            var x = all[0];
             if (!x) return;               // 这张没认出来，照片照存，接着看下一张
             hits++;
             ['brand', 'category', 'size', 'price', 'spec', 'note'].forEach(function (k) {
               if (fields[k] === undefined && x[k]) fields[k] = x[k];
             });
-            var buy = buyFrom(x);
+            all.slice(1).forEach(function (y) {
+              var more = buysFrom(y);
+              if (more.length) buys = mergeBuys(buys, more).list;
+            });
+            // 一张订单列表上可能有好几单，全都要
+            var got2 = buysFrom(x);
             // 同一单截了两张图，先在这一批里合掉
-            if (buy) buys = mergeBuys(buys, [buy]).list;
+            if (got2.length) buys = mergeBuys(buys, got2).list;
           });
         });
       }).catch(function () { /* 单张失败不拖累整批 */ });
@@ -5492,6 +5526,9 @@
         });
         got = mergeBuys(p.purchases, buys);
         if (got.added || got.filled) add.purchases = got.list;
+        // 翻到更早的订单，起用日期要跟着往前推
+        var first = earliestBuy(add.purchases || p.purchases);
+        if (first && (!p.start || first < p.start)) add.start = first;
         // 已经有的那几张不再重复挂
         var have = (p.photos || []).slice();
         shots.forEach(function (s) { if (have.indexOf(s.path) < 0) have.push(s.path); });
@@ -5676,23 +5713,28 @@
           var merged = existing.slice();
           var newOnes = [];
 
-          list.forEach(function (x) {
+          list.forEach(function (x, n) {
             var at = merged.findIndex(function (p) {
               return keyOf(p) === keyOf(x) || p.name === x.name;
             });
-            var buy = buyFrom(x);
+            var buys = buysFrom(x);
 
             if (at < 0) {
+              /* ⚠️ id 必须带上这张图里的序号 n。
+                 原来是 'p'+stamp+idx —— stamp 每批只算一次、idx 是第几张图，
+                 于是同一张图里认出的每一件都拿到同一个 id，
+                 而 saveProducts 按 id 去重，只活下来最后一条：
+                 一张图里有三件也只入库一件。 */
               var np = {
-                id: 'p' + stamp + idx,
+                id: 'p' + stamp + idx + '-' + n,
                 name: x.name, short: x.short || '', brand: x.brand || '',
                 kind: x.kind || 'skincare', category: x.category || '',
                 size: x.size || undefined, price: x.price,
                 spec: x.spec || undefined, note: x.note || undefined,
                 status: 'using',
-                purchases: buy ? [buy] : undefined,
+                purchases: buys.length ? buys : undefined,
                 photos: [path],                 // 只挂自己这一张
-                start: (buy && buy.date) || todayISO(),
+                start: earliestBuy(buys) || todayISO(),
                 addedAt: todayISO(),
               };
               newOnes.push(np);
@@ -5704,11 +5746,14 @@
             ['brand', 'category', 'size', 'price', 'spec', 'note', 'short'].forEach(function (k) {
               if ((p[k] === undefined || p[k] === '') && x[k]) add[k] = x[k];
             });
-            if (buy) {
-              // 同一单再扫到，补进原来那条，不写第二条
-              var m = mergeBuys(p.purchases, [buy]);
+            if (buys.length) {
+              // 同一单再扫到就补进原来那条，新的单子才追加
+              var m = mergeBuys(p.purchases, buys);
               if (m.added || m.filled) add.purchases = m.list;
             }
+            // 起用日期以最早的一单为准 —— 后翻到更早的订单要能往前推
+            var first = earliestBuy(add.purchases || p.purchases);
+            if (first && (!p.start || first < p.start)) add.start = first;
             if ((p.photos || []).indexOf(path) < 0) {
               add.photos = (p.photos || []).concat([path]);
             }

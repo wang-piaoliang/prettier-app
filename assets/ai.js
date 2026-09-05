@@ -280,12 +280,18 @@
       '   不要写成完整品名（「高光修容盘」这种没有品牌的不行，看不出是谁家的）。',
       '7. 是订单/小票截图的话，把下单日期写进 boughtAt（YYYY-MM-DD），',
       '   店铺或平台写进 where（如 天猫、丝芙兰、免税店）。看不到就省略。',
+      '8. ⚠ 一张订单列表截图上常有【好几单】。同一件东西买过多次，',
+      '   就把每一单都写进 purchases 数组，一单一条，不要只留一条、也不要合并。',
+      '   每单能看到什么就写什么：date（YYYY-MM-DD）、price（数字）、',
+      '   size（净含量）、spec（色号/款式）、where（店铺）。',
+      '   只有一单时，写进 purchases 里也行，boughtAt 那几个字段可以省略。',
       '',
       '严格输出 JSON，不要 markdown 代码块：',
       '{"products":[{',
       '  "brand":"", "name":"", "kind":"skincare", "category":"",',
       '  "short":"", "size":"", "price":0, "spec":"", "note":"",',
-      '  "boughtAt":"", "where":""',
+      '  "boughtAt":"", "where":"",',
+      '  "purchases":[{"date":"","price":0,"size":"","spec":"","where":""}]',
       '}]}',
       '',
       'category 用中文：洁面、化妆水、精华、眼霜、面霜、防晒、面膜、',
@@ -320,6 +326,21 @@
             boughtAt: /^\d{4}-\d{2}-\d{2}$/.test(String(p.boughtAt || '').trim())
               ? String(p.boughtAt).trim() : '',
             where: String(p.where || '').trim(),
+            /* ⚠ 白名单漏一个字段，模型认出来了也会在这儿被静默丢掉。
+               购买记录一直只有一条，就是因为多单没有地方放。 */
+            purchases: (Array.isArray(p.purchases) ? p.purchases : [])
+              .map(function (b) {
+                var bp = Number(b && b.price);
+                return {
+                  date: /^\d{4}-\d{2}-\d{2}$/.test(String((b && b.date) || '').trim())
+                    ? String(b.date).trim() : '',
+                  price: (isFinite(bp) && bp > 0) ? bp : undefined,
+                  size: String((b && b.size) || '').trim(),
+                  spec: String((b && b.spec) || '').trim(),
+                  where: String((b && b.where) || '').trim(),
+                };
+              })
+              .filter(function (b) { return b.date || b.price != null || b.size || b.where; }),
           };
         });
         return out;
