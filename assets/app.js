@@ -6080,9 +6080,19 @@
 
           var path = 'products/' + stamp + '-' + idx + '.jpg';
           var existing = allProducts();
+          /* 去重键：先把品牌名从品名里剥掉再比。
+             「适乐肤C乳」和「CeraVe C乳」是同一件东西，字面却对不上 ——
+             品牌在中英之间来回换写是常态，不能指望一致。
+             ⚠ 只剥品牌，别再往下归并：「蜜丝婷防晒 经典 / 粉瓶」剥完还是两条，
+             那两个她明确要求分开。 */
           var keyOf = function (x) {
-            return String(x.short || x.name || '')
-              .replace(/[\s·・\-—_（）()【】\[\]]/g, '').toLowerCase();
+            var raw = String(x.short || x.name || '');
+            var brand = String(x.brand || '');
+            // 品牌可能写成「CeraVe/适乐肤」这种，逐段都剥掉
+            brand.split(/[\s\/·・,，、]+/).forEach(function (w) {
+              if (w.length >= 2) raw = raw.split(w).join('');
+            });
+            return raw.replace(/[\s·・\-—_（）()【】\[\]]/g, '').toLowerCase();
           };
           var merged = existing.slice();
           var newOnes = [];
