@@ -18,6 +18,7 @@
     token: 'prettier.token',
     theme: 'prettier.theme',
     cache: 'prettier.cache',   // 上次拉到的数据，离线冷启动用
+    view:  'prettier.view',    // 停在哪一页，被系统回收后回到原处
   };
 
   var state = {
@@ -2795,6 +2796,51 @@
     go('compose');
   }
 
+
+  /* ===== 草稿断电续传 =====
+     照片是 Blob，localStorage 放不下，所以整份草稿存 IndexedDB。
+     iOS 在相册选图时经常把 PWA 回收，回来草稿就没了 —— 刚选的照片白选。 */
+  var DRAFT_KEY = '__draft';
+  var draftSaveTimer = null;
+
+  function saveDraft2() {
+    clearTimeout(draftSaveTimer);
+    draftSaveTimer = setTimeout(function () {
+      var d = state.draft;
+      if (!d || (!(d.photos || []).length && !(d.note || '').trim() && !d.editingId)) {
+        GitStore.cachePut(DRAFT_KEY, null);
+        return;
+      }
+      var copy = {};
+      Object.keys(d).forEach(function (k) {
+        if (k !== 'photos') copy[k] = d[k];
+      });
+      // preview 是 objectURL，重启后就失效了，只留 blob
+      copy.photos = (d.photos || []).map(function (p) {
+        return { blob: p.blob, width: p.width, height: p.height, gain: p.gain,
+                 takenAt: p.takenAt, filename: p.filename };
+      });
+      GitStore.cachePut(DRAFT_KEY, copy);
+    }, 300);
+  }
+
+  function restoreDraft() {
+    return GitStore.cacheGet(DRAFT_KEY).then(function (d) {
+      if (!d || !d.photos) return null;
+      // objectURL 每次启动都要重新造
+      d.photos = (d.photos || []).map(function (p) {
+        return Object.assign({}, p, { preview: URL.createObjectURL(p.blob) });
+      });
+      state.draft = d;
+      return d;
+    }).catch(function () { return null; });
+  }
+
+  function clearSavedDraft() {
+    clearTimeout(draftSaveTimer);
+    return GitStore.cachePut(DRAFT_KEY, null);
+  }
+
   function blankDraft() {
     var now = new Date();
     // 产品从照片上看不出来，而且基本天天一样 —— 默认沿用上一次，自己改。
@@ -3036,7 +3082,7 @@
 
     var noteBox = $('#fNote', host);
     autoGrow(host);
-    noteBox.addEventListener('input', function () { d.note = this.value; });
+    noteBox.addEventListener('input', function () { d.note = this.value; saveDraft2(); });
     mountTagRow($('#fZone', host), 'zone', {
       isOn: function (k) { return (d.tags || []).indexOf(k) >= 0; },
       onPick: function (k) {
@@ -3097,6 +3143,7 @@
     $('#resetBtn', host).addEventListener('click', function () {
       if (!confirm('清空这条草稿？')) return;
       state.draft = blankDraft();
+      clearSavedDraft();
       renderCompose();
     });
   }
@@ -3326,7 +3373,7 @@
     });
     // 时间用上传当下的，不从照片元数据里取 —— 拍完立刻传，当下时间更可靠，
     // 而且相册里的 lastModified 可能是导入时间，不是拍摄时间。
-    Promise.all(jobs).then(drawPicker);
+    Promise.all(jobs).then(function () { drawPicker(); saveDraft2(); });
   }
 
   function makeEntryId(date) {
@@ -3519,6 +3566,8 @@
   function saveDraft() {
     var d = state.draft;
     if (!d.date) return toast('先选时间', true);
+    // 交给队列之后这份草稿就没用了，别留着让下次启动又跳进「记一条」
+    clearSavedDraft();
     var hasPhoto = d.photos.length || (d.keepPhotos && d.keepPhotos.length);
     if (!d.editingId && !hasPhoto && !d.note) {
       return toast('至少加一张照片或写点备注', true);
@@ -3700,6 +3749,9 @@
     var keepY = window.scrollY;
 
     state.view = view;
+    // 记住停在哪一页：iOS 选照片时会把 PWA 回收，回来是重新启动，
+    // 固定落到时间线的话，人以为「返回」结果被扔到别处
+    set(LS.view, view);
     $$('.view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + view); });
     $$('.tabbar button').forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
     if (!sameView) window.scrollTo(0, 0);
@@ -4223,9 +4275,46 @@
     return q.toLowerCase().split(/\s+/).every(function (w) { return hay.indexOf(w) >= 0; });
   }
 
+
+  /* 按搜索词显示/隐藏产品卡，不重建 DOM。
+     空掉的分组标题（大类和二级）也一起藏起来，免得留一排空标题。 */
+  function applyProdFilter(host) {
+    host = host || $('#view-products');
+    if (!host) return;
+    var q = prodQuery;
+    var byId = {};
+    allProducts().forEach(function (p) { byId[p.id] = p; });
+
+    $$('.prod-card', host).forEach(function (card) {
+      var p = byId[card.dataset.pid];
+      card.hidden = !(p && matchProduct(p, q));
+    });
+
+    // 一个列表里全藏了，它的标题也藏掉
+    var hideEmpty = function (headSel) {
+      $$(headSel, host).forEach(function (head) {
+        var body = head.nextElementSibling;
+        if (!body) return;
+        var alive = Array.prototype.filter.call(
+          body.querySelectorAll('.prod-card'), function (c) { return !c.hidden; }).length;
+        head.hidden = !alive;
+        // 大类下面是 .cat-body，里面还套着二级；二级自己单独判
+        if (!body.classList.contains('cat-body')) body.hidden = !alive;
+      });
+    };
+    hideEmpty('.sub-head');
+    hideEmpty('.cat-head');
+
+    var none = $('#prodNone', host);
+    var any = Array.prototype.some.call(
+      host.querySelectorAll('.prod-card'), function (c) { return !c.hidden; });
+    if (none) none.hidden = any || !q;
+  }
+
   function renderProducts() {
     var host = $('#view-products');
-    var list = allProducts().filter(function (p) { return matchProduct(p, prodQuery); });
+    // 渲染全部，过滤交给 applyProdFilter（只藏不重画，输入法才不会被打断）
+    var list = allProducts();
 
     var body = '';
     KINDS.forEach(function (k) {
@@ -4278,9 +4367,8 @@
           retired.map(prodCardHTML).join('') + '</div>';
     }
 
-    if (!body && prodQuery) {
-      body = '<div class="empty">没有匹配「' + esc(prodQuery) + '」的产品</div>';
-    }
+    // 「搜不到」的提示常驻在 DOM 里，由 applyProdFilter 控制显隐
+    body += '<div class="empty" id="prodNone" hidden>没有匹配的产品</div>';
     if (!body) {
       body = '<div class="empty"><strong>产品库还是空的</strong>' +
         '拍一张护肤品或彩妆的照片，AI 会认出品牌和品名。</div>';
@@ -4304,15 +4392,16 @@
       '<div id="scanOut"></div>' + body + spendHTML();
 
     bindProdDrag(host);
+    applyProdFilter(host);
     var sBox = $('#prodSearch', host);
     if (sBox) {
+      /* ⚠ 千万别在 input 里重画整页。
+         换掉 innerHTML 会把输入框本身删掉重建，中文输入法的候选
+         还没上屏就被打断 —— 表现就是「倒着打字」「打一个出两个」。
+         只藏卡片，不动 DOM 结构。 */
       sBox.addEventListener('input', function () {
         prodQuery = this.value.trim();
-        var pos = this.selectionStart;
-        renderProducts();
-        // 重画之后把焦点和光标放回去，不然打一个字就跳出来
-        var again = $('#prodSearch');
-        if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) {} }
+        applyProdFilter(host);
       });
     }
     $('#scanBtn', host).addEventListener('click', function () { $('#prodInput').click(); });
@@ -6231,7 +6320,13 @@
     if (window.ResizeObserver) {
       new ResizeObserver(syncAppbarHeight).observe($('.appbar'));
     }
-    loadData().then(function () { go('timeline'); })
+    loadData().then(function () { return restoreDraft(); }).then(function () {
+      // 回到被打断前那一页；草稿还在就直接进「记一条」
+      var back = get(LS.view, 'timeline');
+      var hasDraft = state.draft && ((state.draft.photos || []).length ||
+                                     (state.draft.note || '').trim());
+      go(hasDraft ? 'compose' : (back || 'timeline'));
+    })
       .catch(function (err) { toast(String(err.message || err), true); });
   }
 
