@@ -4393,6 +4393,15 @@
 
     bindProdDrag(host);
     applyProdFilter(host);
+    // 重画会把展开的详情弄没，这里补回去 —— 否则页面高度一变，滚动位置就跑了
+    if (openProdId) {
+      var card = host.querySelector('.prod-card[data-pid="' + openProdId + '"]');
+      if (card && !card.querySelector('.prod-detail')) {
+        var want = openProdId;
+        openProdId = null;                 // toggle 会把它设回来
+        toggleProdDetail(want, card);
+      }
+    }
     var sBox = $('#prodSearch', host);
     if (sBox) {
       /* ⚠ 千万别在 input 里重画整页。
@@ -4817,10 +4826,16 @@
     { k: 'note',     label: '备注',   type: 'text' },
   ];
 
+  /* 哪件产品的详情正开着。
+     详情是动态 append 的，不在 renderProducts 的 HTML 里 ——
+     不记住的话，一保存就重画、详情消失、页面变矮，滚动位置就废了。 */
+  var openProdId = null;
+
   function toggleProdDetail(id, card) {
     var old = card.querySelector('.prod-detail');
-    if (old) { old.remove(); return; }
+    if (old) { old.remove(); openProdId = null; return; }
     closeInlineEditors();
+    openProdId = id;
 
     var p = allProducts().filter(function (x) { return x.id === id; })[0];
     if (!p) return;
@@ -5650,13 +5665,45 @@
      buysFrom 把 purchases 数组和单条字段合到一起，都变成购买记录。 */
   var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+  /* 把截图上那串日期原文补成完整日期。
+
+     淘宝对**当年**的订单只显示「09.05」，跨年的才写「2024.01.13」。
+     年份必须由这里补 —— 模型不知道今天是哪年，让它猜就会猜成 2024。
+
+     补完要是落在未来（比如今天 3 月、单子写「12.28」），那说明是去年的。 */
+  function resolveBuyDate(raw, iso) {
+    var t = String(raw || '').trim();
+    /* ⚠ 原文优先，模型给的完整日期排后面。
+       整条改动的前提就是「模型的年份不可信」：它同时给
+       date=2024-09-05 和 dateRaw=09.05 时，该信的是后者。 */
+    if (!t) return DATE_RE.test(String(iso || '')) ? iso : '';
+
+    var m = t.match(/^(\d{4})[.\-\/年](\d{1,2})[.\-\/月](\d{1,2})/);
+    if (m) {
+      return m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2);
+    }
+    m = t.match(/^(\d{1,2})[.\-\/月](\d{1,2})/);
+    // 原文看不懂，才退回模型给的完整日期
+    if (!m) return DATE_RE.test(String(iso || '')) ? iso : '';
+    var today = todayISO();
+    var year = Number(today.slice(0, 4));
+    var mmdd = ('0' + m[1]).slice(-2) + '-' + ('0' + m[2]).slice(-2);
+    var guess = year + '-' + mmdd;
+    // 补成今年却落在未来 → 是去年的
+    if (guess > today) guess = (year - 1) + '-' + mmdd;
+    return guess;
+  }
+
+
   /* ⚠ 没有下单日期就不算一条购买记录。
      原来是 `b.date || todayISO()` —— 模型没读到日期就拿今天顶上，
      结果库里混进「2026-08-17」「2026-09-05」这种其实是入库日/识别日的假记录，
      看着跟真的一样，翻历史时会误导。宁可少一条也不记假的。 */
   function buysFrom(x) {
-    var out = (x.purchases || []).filter(function (b) {
-      return b && DATE_RE.test(String(b.date || ''));
+    var out = (x.purchases || []).map(function (b) {
+      return b ? Object.assign({}, b, { date: resolveBuyDate(b.dateRaw, b.date) }) : b;
+    }).filter(function (b) {
+      return b && DATE_RE.test(String(b.date || '')) && b.date <= todayISO();
     }).map(function (b) {
       var one = { date: b.date, at: nowLocal() };
       if (b.price != null) one.price = b.price;
@@ -5695,8 +5742,8 @@
     var price = x.price != null && x.price !== '' ? Number(x.price) : null;
     var size = x.size || '';
     // 同上：日期读不出来就不生成购买记录
-    if (!DATE_RE.test(String(x.boughtAt || ''))) return null;
-    var date = x.boughtAt;
+    var date = resolveBuyDate(x.boughtAtRaw, x.boughtAt);
+    if (!DATE_RE.test(date) || date > todayISO()) return null;
     if (price == null && !size && !x.where) return null;
     var b = { date: date, at: nowLocal() };   // at 是记录动作的时间点，展示只用 date
     if (price != null && !isNaN(price)) b.price = price;
@@ -5725,14 +5772,21 @@
      反过来，一边空着不算冲突：那是【信息缺】，不是另一单。
      以前那版要求价格和渠道都一字不差，结果同一张订单截图重传一次、
      模型这回多认出个渠道，就又写了一条重复的。 */
+  /* 比对用的归一化：去掉空白和常见标点、转小写。
+     ⚠ 原来是逐字比，「天猫 miniso旗舰店」和「天猫miniso旗舰店」
+     只差一个空格就被当成两单，同一次购买记了两条。 */
+  function loose(v) {
+    return String(v || '').replace(/[\s·・\-—_（）()【】\[\]、,，\/]+/g, '').toLowerCase();
+  }
+
   function sameBuyAt(list, b) {
     return (list || []).findIndex(function (o) {
       if (o.date !== b.date) return false;
       if (o.price != null && b.price != null && Number(o.price) !== Number(b.price)) return false;
-      if (o.where && b.where && o.where !== b.where) return false;
-      if (o.size && b.size && o.size !== b.size) return false;
+      if (o.where && b.where && loose(o.where) !== loose(b.where)) return false;
+      if (o.size && b.size && loose(o.size) !== loose(b.size)) return false;
       var ov = buyVariant(o), bv = buyVariant(b);
-      if (ov && bv && ov !== bv) return false;
+      if (ov && bv && loose(ov) !== loose(bv)) return false;
       return true;
     });
   }
