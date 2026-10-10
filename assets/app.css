@@ -475,7 +475,7 @@ input:not([type="range"]):focus, textarea:focus, select:focus {
   position: fixed;
   left: 50%; transform: translateX(-50%);
   bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 18px);
-  z-index: 90;
+  z-index: 90; pointer-events: none;
   max-width: calc(100vw - 36px);
   padding: 11px 18px;
   border-radius: 22px;
@@ -679,17 +679,23 @@ input:not([type="range"]):focus, textarea:focus, select:focus {
 #queue {
   position: fixed; left: 12px; right: 12px;
   bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 12px);
-  z-index: 60; display: grid; gap: 6px;
+  z-index: 60; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px;
+  min-width: 0; max-height: 50vh; max-height: 50dvh;
+  overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
 }
 .qrow {
-  display: flex; align-items: center; gap: 9px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 9px;
+  min-width: 0; max-width: 100%;
   padding: 10px 14px; border-radius: 12px;
   background: var(--ink); color: var(--bg);
   font-family: var(--sans); font-size: 12.5px;
   box-shadow: var(--shadow-lg);
 }
 .qrow.err { background: var(--focus); color: #fff; }
-.qrow .qtxt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qrow .qtxt { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.qrow.err .qtxt { flex-basis: 100%; }
+.qactions { display: flex; flex: 0 0 auto; gap: 8px; margin-left: auto; }
+.qactions button { min-width: 64px; min-height: 44px; flex: 0 0 auto; white-space: nowrap; touch-action: manipulation; }
 .qrow button {
   border: none; background: rgba(255,255,255,.18); color: inherit;
   border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer;
@@ -1428,7 +1434,7 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
 /* 队列收成小圆点 */
 #queue.mini {
   left: auto; right: 14px; width: auto; padding: 0; background: none;
-  border: none; box-shadow: none;
+  border: none; box-shadow: none; overflow: visible;
 }
 .q-dot {
   width: 34px; height: 34px; border-radius: 999px;

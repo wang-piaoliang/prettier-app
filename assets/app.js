@@ -3573,14 +3573,18 @@
     var host = $('#queue');
     if (!host || host.dataset.sw) return;
     host.dataset.sw = '1';
-    var x0 = null;
+    var x0 = null, y0 = null;
     host.addEventListener('touchstart', function (ev) {
-      x0 = ev.touches[0].clientX;
+      x0 = y0 = null;
+      if (ev.target.closest('button')) return;
+      x0 = ev.touches[0].clientX; y0 = ev.touches[0].clientY;
     }, { passive: true });
     host.addEventListener('touchend', function (ev) {
       if (x0 == null) return;
       var dx = ev.changedTouches[0].clientX - x0;
-      x0 = null;
+      var dy = ev.changedTouches[0].clientY - y0;
+      x0 = y0 = null;
+      if (Math.abs(dx) < Math.abs(dy) * 1.4) return;
       if (dx > 50 && !queueMini) { queueMini = true; renderQueue(); }
       if (dx < -50 && queueMini) { queueMini = false; renderQueue(); }
     }, { passive: true });
@@ -3604,8 +3608,8 @@
       if (j.state === 'failed') {
         return '<div class="qrow err"><span class="qtxt">' + esc(j.label) + ' · ' +
           esc(j.error) + '</span>' +
-          '<button data-retry="' + i + '">重试</button>' +
-          '<button data-drop="' + i + '">丢弃</button></div>';
+          '<div class="qactions"><button type="button" data-retry="' + i + '">重试</button>' +
+          '<button type="button" data-drop="' + i + '">丢弃</button></div></div>';
       }
       return '<div class="qrow"><span class="spin"></span>' +
         '<span class="qtxt">' + esc(j.label) + ' · ' +
@@ -6776,6 +6780,7 @@
     // 灯箱：点开后可左右滑动看同一条记录里的全部照片
     bindLightbox();
     bindZoom();
+    bindQueue();
     bindQueueSwipe();
     checkForUpdate();
 
