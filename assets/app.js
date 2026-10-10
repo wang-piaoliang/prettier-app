@@ -225,6 +225,7 @@
 
   function configureStore() {
     GitStore.configure({ owner: state.owner, repo: state.repo, token: state.token });
+    if (window.PrettierPhotos) window.PrettierPhotos.configure(GitStore.config());
   }
 
   function seedFromCache() {
@@ -276,6 +277,7 @@
         var settings = r[0] || {};
         settings.entries = r[1] || [];
         state.data = settings;
+        applyQueuedLists();
         set(LS.cache, JSON.stringify({ data: settings, tree: state.tree }));
         syncDot('', '已同步');
         renderPending();
@@ -309,21 +311,15 @@
   var photoURLCache = {};
 
   function photoURL(path) {
-    if (photoURLCache[path]) return Promise.resolve(photoURLCache[path]);
-    var sha = state.tree[path];
-    if (!sha) return Promise.reject(new Error('仓库里没有这张照片：' + path));
-
-    return GitStore.cacheGet(sha).then(function (hit) {
-      if (hit) return hit;
-      return GitStore.readBlobBySha(sha).then(function (blob) {
-        GitStore.cachePut(sha, blob);
-        return blob;
-      });
-    }).then(function (blob) {
-      var u = URL.createObjectURL(blob);
-      photoURLCache[path] = u;
-      return u;
+    var sha = state.tree[path] || '';
+    var key = state.owner + '/' + state.repo + ':' + path + ':' + sha;
+    if (photoURLCache[key]) return photoURLCache[key];
+    var task = window.PrettierPhotos.get(path, sha).then(function (blob) {
+      return URL.createObjectURL(blob);
     });
+    photoURLCache[key] = task;
+    task.catch(function () { delete photoURLCache[key]; });
+    return task;
   }
 
   /* 该延后的是【网络请求】，不是解码。
@@ -343,7 +339,7 @@
     if (img.dataset.loaded) return;
     img.dataset.loaded = '1';
     photoURL(img.dataset.key).then(function (u) { img.src = u; })
-      .catch(function () { img.alt = '照片加载失败'; });
+      .catch(function (err) { delete img.dataset.loaded; img.alt = '照片加载失败'; img.title = err.message || String(err); });
   }
 
   // 首屏几张直接取，不等 IntersectionObserver：
@@ -2124,13 +2120,12 @@
 
   /* settings.json 里某个列表的通用保存：先本地生效，再后台提交。 */
   function persistList(key, list, message) {
+    var before = ((state.data && state.data[key]) || []).slice();
     if (state.data) state.data[key] = list;
     refresh('mainlines');
-    return GitStore.updateJSON('settings.json', function (remote) {
-      var base = remote || {};
-      base[key] = list;
-      return base;
-    }, message).catch(function (e) { toast('保存失败：' + (e.message || e), true); });
+    return enqueue({ kind: 'list', settingKey: key, before: before, list: list,
+      message: message, label: message, refreshView: 'mainlines' })
+      .catch(function () {});
   }
 
   function careList() {
@@ -2313,14 +2308,7 @@
   }
 
   function persistCare(list, msg) {
-    // 先本地生效，不让人对着转圈等
-    if (state.data) state.data.careLog = list;
-    refresh('mainlines');
-    return GitStore.updateJSON('settings.json', function (remote) {
-      var base = remote || {};
-      base.careLog = list;
-      return base;
-    }, msg).catch(function (e) { toast('保存失败：' + (e.message || e), true); });
+    return persistList('careLog', list, msg);
   }
 
   function weightHTML() {
@@ -2930,8 +2918,8 @@
             (d.rating == null ? '未打分' : d.rating.toFixed(1)) + '</span>' +
           '<input type="range" id="fRate" min="0" max="5" step="0.1" value="' +
             (d.rating == null ? 3 : d.rating) + '">' +
-          (d.rating == null ? '' :
-            '<button class="more-toggle" id="fRateOff" type="button">清除</button>') +
+          '<button class="score-clear" id="fRateOff" type="button"' +
+            (d.rating == null ? ' disabled style="visibility:hidden"' : '') + '>清除</button>' +
         '</div>' +
       '</div>' +
 
@@ -3074,10 +3062,17 @@
     rate.addEventListener('input', function () {
       d.rating = Number(this.value);
       rateVal.textContent = d.rating.toFixed(1);
-      if (wasUnset) { wasUnset = false; renderCompose(); }
+      if (wasUnset) {
+        wasUnset = false;
+        rate.closest('.score-row').classList.remove('unset');
+        var clear = $('#fRateOff', host);
+        clear.disabled = false; clear.style.visibility = 'visible';
+      }
+      saveDraft2();
     });
     on('#fRateOff', 'click', function () {
       d.rating = null;
+      saveDraft2();
       renderCompose();
     });
 
@@ -3417,22 +3412,30 @@
     return next;
   }
 
+  function applyQueuedLists() {
+    if (!state.data) return;
+    queue.forEach(function (j) {
+      if (j.kind === 'list') state.data[j.settingKey] = GitStore.mergeListDelta(state.data[j.settingKey], j.before, j.list);
+    });
+  }
+
   function restoreQueue() {
     if (queueRestored) return Promise.resolve();
     queueRestored = true;
     return GitStore.cacheGet('__jobs').then(function (jobs) {
       (Array.isArray(jobs) ? jobs : []).forEach(function (j) {
         j.state = 'failed';
-        j.error = '上次处理被中断，照片已保留，请重试';
+        j.error = j.kind === 'list' ? '上次保存被中断，记录已保留，请重试' : '上次处理被中断，照片已保留，请重试';
         queue.push(j);
       });
+      applyQueuedLists();
       renderQueue();
     });
   }
 
   function enqueue(job) {
     job.state = 'saving';
-    job.step = '保存待传照片';
+    job.step = job.kind === 'list' ? '保存待同步记录' : '保存待传照片';
     queue.push(job);
     renderQueue();
     return persistQueue().then(function () {
@@ -3443,7 +3446,7 @@
       job.state = 'failed';
       job.error = err.message || String(err);
       renderQueue();
-      toast('照片暂存失败：' + job.error + '，请保留页面并重试', true);
+      toast((job.kind === 'list' ? '记录暂存失败：' : '照片暂存失败：') + job.error + '，请保留页面并重试', true);
       throw err;
     });
   }
@@ -3475,7 +3478,7 @@
          照片连同记录一起没了 —— 而照片是当场拍的，丢了补不回来。
          所以失败要立刻转存本地（IndexedDB），等下次连上再补传。 */
       var why = (err.step ? '「' + err.step + '」' : '') + (err.message || err);
-      if (job.kind || job.run) {
+      if ((job.kind && job.kind !== 'list') || job.run) {
         job.state = 'failed';
         job.error = why;
         running = false;
@@ -3508,6 +3511,11 @@
     /* 带 run 的是自定义任务（比如产品识别）。
        放进同一个队列，切页面也照跑完 —— 以前识别写在产品页那个元素里，
        一切走就断了，等于白传。 */
+    if (job.kind === 'list') return GitStore.updateJSON('settings.json', function (remote) {
+      var base = remote || {};
+      base[job.settingKey] = GitStore.mergeListDelta(base[job.settingKey], job.before, job.list);
+      return base;
+    }, job.message);
     if (job.kind === 'scan') return scanProductsJob(job.sourceFiles, function (t) { job.step = t; renderQueue(); }, job);
     if (job.kind === 'shoot') return shootProductJob(job.pid, job.sourceFiles, function (t) { job.step = t; renderQueue(); }, job);
     if (job.run) {
@@ -3861,6 +3869,115 @@
 
   /* ================= 设置 ================= */
 
+  var photoTransfer = { running: false, cancelled: false, text: '' };
+
+  function photoSettingsHTML() {
+    var mode = window.PrettierPhotos.mode();
+    return '<div class="section-title">本机照片</div><div class="card">' +
+      '<div class="tiny" id="photoDiskStats">正在读取本机照片…</div>' +
+      '<div class="tiny" style="margin:10px 0">打开照片直接读本机；新照片保存到本机后，再按下面的设置备份。</div>' +
+      '<div class="segmented" id="photoMode">' +
+      '<button data-mode="backup"' + (mode === 'backup' ? ' class="on"' : '') + '>本机 + 云端备份</button>' +
+      '<button data-mode="local"' + (mode === 'local' ? ' class="on"' : '') + '>新照片仅本机</button></div>' +
+      '<button class="btn" id="photoDownload" type="button" style="margin-top:14px">' +
+      (photoTransfer.running ? '暂停下载' : '把历史照片保存到本机') + '</button>' +
+      '<div class="tiny" id="photoTransferOut" style="margin-top:10px">' + esc(photoTransfer.text) + '</div>' +
+      '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">' +
+      '<button class="btn ghost" id="photoExport" type="button">导出照片备份</button>' +
+      '<button class="btn ghost" id="photoImport" type="button">导入照片备份</button></div>' +
+      '<input id="photoBackupInput" type="file" accept=".zip,application/zip" hidden>' +
+      '<div class="tiny" style="margin-top:10px">更换设备可导入照片备份。清理网站数据会删除本机照片。</div></div>';
+  }
+
+  function showPhotoStats() {
+    return window.PrettierPhotos.stats().then(function (s) {
+      var out = $('#photoDiskStats');
+      if (out) out.textContent = '本机已保存 ' + s.count + ' 张 · ' + (s.bytes / 1048576).toFixed(1) + ' MB';
+    }).catch(function (err) { var out = $('#photoDiskStats'); if (out) out.textContent = err.message || String(err); });
+  }
+
+  function photoTransferMessage(text) {
+    photoTransfer.text = text;
+    var out = $('#photoTransferOut');
+    if (out) out.textContent = text;
+  }
+
+  function photoPaths() {
+    var out = [], seen = {};
+    function visit(value) {
+      if (typeof value === 'string') {
+        if (/\.(?:jpe?g|png|webp|heic|heif)$/i.test(value) && value.indexOf('/') >= 0 && !/^https?:/.test(value) && !seen[value]) {
+          seen[value] = true; out.push(value);
+        }
+      } else if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === 'object') Object.keys(value).forEach(function (k) { visit(value[k]); });
+    }
+    // 新记录优先，避免把首次下载时间花在很早的历史照片上。
+    newestFirst((state.data && state.data.entries) || []).forEach(visit);
+    visit(state.data || {});
+    return out;
+  }
+
+  function downloadPhotosToDevice() {
+    if (photoTransfer.running) { photoTransfer.cancelled = true; photoTransferMessage('正在暂停，已保存的照片会保留'); return; }
+    var paths = photoPaths(), done = 0;
+    if (!paths.length) return toast('还没有照片记录', true);
+    photoTransfer.running = true; photoTransfer.cancelled = false;
+    var b = $('#photoDownload'); if (b) b.textContent = '暂停下载';
+    photoTransferMessage('准备保存 ' + paths.length + ' 张历史照片');
+    window.PrettierPhotos.keepStorage();
+    paths.reduce(function (chain, path) {
+      return chain.then(function () {
+        if (photoTransfer.cancelled) return;
+        return window.PrettierPhotos.get(path, state.tree[path] || '').then(function () {
+          done++; photoTransferMessage('已保存 ' + done + '/' + paths.length + ' 张到本机');
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      photoTransferMessage(photoTransfer.cancelled ? '已暂停；再次下载会跳过已保存的照片' : '历史照片已全部保存在本机，可以直接打开');
+    }).catch(function (err) {
+      photoTransferMessage('下载已暂停，已保存的照片保留。' + (err.message || err));
+      toast('历史照片下载未完成：' + (err.message || err), true);
+    }).finally(function () {
+      photoTransfer.running = false;
+      var button = $('#photoDownload'); if (button) button.textContent = '把历史照片保存到本机';
+      showPhotoStats();
+    });
+  }
+
+  function bindPhotoSettings(host) {
+    showPhotoStats();
+    $('#photoMode', host).addEventListener('click', function (ev) {
+      var b = ev.target.closest('button[data-mode]'); if (!b) return;
+      try { window.PrettierPhotos.setMode(b.dataset.mode); }
+      catch (err) { toast('照片设置没有保存：' + (err.message || err), true); return; }
+      $$('#photoMode button', host).forEach(function (x) { x.classList.toggle('on', x === b); });
+      toast(b.dataset.mode === 'local' ? '新照片只保存在本机' : '新照片保存在本机，并备份到云端');
+    });
+    $('#photoDownload', host).addEventListener('click', downloadPhotosToDevice);
+    $('#photoExport', host).addEventListener('click', function () {
+      var button = this; button.disabled = true;
+      var settings = Object.assign({}, state.data); delete settings.entries;
+      window.PrettierPhotos.exportBackup(settings, (state.data && state.data.entries) || [], function (i, total) {
+        button.textContent = '准备备份 ' + i + '/' + total;
+      }).then(function (blob) {
+        var url = URL.createObjectURL(blob), a = document.createElement('a');
+        a.href = url; a.download = 'prettier-photos-' + todayISO() + '.zip';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+        toast('照片备份已生成');
+      }).catch(function (err) { toast('备份失败：' + (err.message || err), true); })
+        .finally(function () { button.disabled = false; button.textContent = '导出照片备份'; });
+    });
+    $('#photoImport', host).addEventListener('click', function () { $('#photoBackupInput', host).click(); });
+    $('#photoBackupInput', host).addEventListener('change', function () {
+      var file = this.files[0]; this.value = ''; if (!file) return;
+      window.PrettierPhotos.importBackup(file, function (i, total) { photoTransferMessage('导入照片 ' + i + '/' + total); })
+        .then(function (count) { photoURLCache = {}; photoTransferMessage('已导入 ' + count + ' 张照片到本机'); return showPhotoStats(); })
+        .catch(function (err) { toast('导入失败：' + (err.message || err), true); });
+    });
+  }
+
   function renderSettings() {
     var host = $('#view-settings');
     var p = PrettierAI.provider();
@@ -3893,6 +4010,7 @@
         '<div class="tiny" id="aiTestOut" style="margin-top:10px"></div>' +
       '</div>' +
 
+      photoSettingsHTML() +
       '<div class="section-title">云端</div>' +
       '<div class="card">' +
         '<div class="kv-line"><b>仓库</b><span>' + esc(state.owner + '/' + state.repo) + '</span></div>' +
@@ -3931,6 +4049,7 @@
         '</div>' +
       '</div>';
 
+    bindPhotoSettings(host);
     var keyInput = $('#aiKey', host);
 
     $('#aiProvider', host).addEventListener('click', function (ev) {
@@ -6331,9 +6450,13 @@
       return;
     }
     photoURL(cur).then(function (u) {
+      if (lb.keys[lb.i] !== cur) return;
       img.src = u;
       img.style.opacity = '1';
-    }).catch(function () { img.style.opacity = '1'; });
+    }).catch(function (err) {
+      if (lb.keys[lb.i] !== cur) return;
+      img.style.opacity = '1'; toast(err.message || String(err), true);
+    });
 
     // 顺手预取相邻两张，滑动时不用等
     [lb.i - 1, lb.i + 1].forEach(function (j) {
@@ -6479,12 +6602,21 @@
     if (window.ResizeObserver) {
       new ResizeObserver(syncAppbarHeight).observe($('.appbar'));
     }
-    loadData().then(function () { return restoreDraft(); }).then(restoreQueue).then(function () {
+    configureStore();
+    var cached = seedFromCache();
+    var warm = cached && cached.data;
+    if (warm) { state.data = cached.data; state.tree = cached.tree || {}; }
+    var first = warm ? Promise.resolve() : loadData();
+    first.then(function () { return restoreDraft(); }).then(restoreQueue).then(function () {
       // 回到被打断前那一页；草稿还在就直接进「记一条」
       var back = get(LS.view, 'timeline');
       var hasDraft = state.draft && ((state.draft.photos || []).length ||
                                      (state.draft.note || '').trim());
       go(hasDraft ? 'compose' : (back || 'timeline'));
+      if (window.PrettierPhotos) window.PrettierPhotos.keepStorage();
+      if (warm) loadData().then(function () {
+        if (!isEditing()) refresh(state.view);
+      }).catch(function (err) { toast('正在使用本机记录；云端同步失败：' + (err.message || err), true); });
     })
       .catch(function (err) { toast(String(err.message || err), true); });
   }

@@ -320,7 +320,7 @@ input[type="date"], input[type="text"], input[type="password"], textarea, select
   appearance: none;
 }
 textarea { min-height: 96px; resize: vertical; line-height: 1.7; }
-input:focus, textarea:focus, select:focus {
+input:not([type="range"]):focus, textarea:focus, select:focus {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
   border-color: transparent;
@@ -871,14 +871,28 @@ textarea { min-height: 64px; }
   font-family: var(--sans); font-size: 15px; color: var(--accent-ink);
   min-width: 38px;
 }
+.score-clear { flex: 0 0 auto; padding: 8px; border: 0; background: none; font-size: 12px; color: var(--ink-3); }
 .score-row input[type="range"] {
-  flex: 1; -webkit-appearance: none; appearance: none;
-  height: 4px; border-radius: 2px; background: var(--line-2); padding: 0;
+  flex: 1; min-width: 0; width: 0; -webkit-appearance: none; appearance: none;
+  height: 44px; padding: 0; margin: 0; border: 0; border-radius: 0;
+  background: transparent; outline: none; cursor: pointer;
+}
+.score-row input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px; border: 0; border-radius: 3px; background: var(--line-2);
 }
 .score-row input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%;
-  background: var(--accent-ink); cursor: pointer;
+  -webkit-appearance: none; width: 24px; height: 24px; margin-top: -9px;
+  border: 0; border-radius: 50%; background: var(--accent-ink); cursor: pointer;
 }
+.score-row input[type="range"]::-moz-range-track {
+  height: 6px; border: 0; border-radius: 3px; background: var(--line-2);
+}
+.score-row input[type="range"]::-moz-range-progress { height: 6px; background: var(--line-2); }
+.score-row input[type="range"]::-moz-range-thumb {
+  width: 24px; height: 24px; border: 0; border-radius: 50%; background: var(--accent-ink);
+}
+.score-row input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--accent-bg); }
+.score-row input[type="range"]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--accent-bg); }
 
 /* 产品详情 */
 .prod-detail {
