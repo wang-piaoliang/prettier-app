@@ -474,7 +474,7 @@ input:not([type="range"]):focus, textarea:focus, select:focus {
 #toast {
   position: fixed;
   left: 50%; transform: translateX(-50%);
-  bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 18px);
+  bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + var(--queue-h, 0px) + 18px);
   z-index: 90; pointer-events: none;
   max-width: calc(100vw - 36px);
   padding: 11px 18px;
@@ -487,7 +487,7 @@ input:not([type="range"]):focus, textarea:focus, select:focus {
 }
 #toast.err { background: var(--focus); color: #fff; }
 /* GitHub 原话是多行的，不换行就只能看到第一句 */
-#toast { white-space: pre-line; }
+#toast { white-space: pre-line; overflow-wrap: anywhere; }
 #diagOut { white-space: pre-line; line-height: 1.65; }
 
 /* ---------- 上传进度 ---------- */

@@ -18,7 +18,7 @@
     var key = prefix() + path;
     var requestKey = key + ':' + (sha || '');
     if (pending[requestKey]) return pending[requestKey];
-    var task = window.GitStore.cacheGet(key).then(function (record) {
+    var task = window.GitStore.cacheGet(key, true).then(function (record) {
       if (record && record.blob && (!sha || !record.sha || record.sha === sha || sha.indexOf('local:') === 0)) return record.blob;
       return window.GitStore.cacheGet(sha || ('local:' + path)).then(function (legacy) {
         if (legacy && legacy.size) return putAt(key, path, legacy, sha).then(function () { return legacy; });

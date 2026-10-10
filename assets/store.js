@@ -164,7 +164,7 @@
 
   function localLoad() {
     if (L.ready) return Promise.resolve(L);
-    return Promise.all([cacheGet(K_SNAP), cacheGet(K_OUT)]).then(function (r) {
+    return Promise.all([cacheGet(K_SNAP, true), cacheGet(K_OUT, true)]).then(function (r) {
       var snap = r[0] || {}, out = r[1] || {};
       L.json = snap.json || {};
       L.base = snap.base || {};
@@ -590,53 +590,132 @@
      照片不会变（新照片是新路径），所以按 sha 缓存进 IndexedDB，
      第二次打开就不用再走网络。这是缓存，不是数据源。 */
 
-  var DB = 'prettier-cache', STORE = 'blobs', dbp = null;
+  var DB = 'prettier-cache', STORE = 'blobs', dbp = null, dbh = null;
+  var binaryWrites = false;
 
+  function storageError(name, message) { var e = new Error(message); e.name = name; return e; }
+  function resetDB(d) {
+    if (d && dbh !== d) return;
+    if (dbh) { try { dbh.close(); } catch (e) {} }
+    dbh = null; dbp = null;
+  }
   function db() {
     if (dbp) return dbp;
-    if (!('indexedDB' in window)) return Promise.reject(new Error('无 IndexedDB'));
-    dbp = new Promise(function (resolve, reject) {
+    if (!('indexedDB' in window)) return Promise.reject(storageError('NotSupportedError', '浏览器没有开放本机数据库'));
+    var opening = new Promise(function (resolve, reject) {
       var r = indexedDB.open(DB, 1);
       r.onupgradeneeded = function () { r.result.createObjectStore(STORE); };
-      r.onsuccess = function () { resolve(r.result); };
-      r.onerror = function () { reject(r.error); };
+      r.onsuccess = function () {
+        var d = r.result; dbh = d;
+        d.onversionchange = function () { resetDB(d); };
+        d.onclose = function () { if (dbh === d) { dbh = null; dbp = null; } };
+        resolve(d);
+      };
+      r.onerror = function () { reject(r.error || storageError('UnknownError', '本机数据库连接失败')); };
     });
+    dbp = opening.catch(function (err) { dbp = null; throw err; });
     return dbp;
   }
 
-  function cacheGet(key) {
-    return db().then(function (d) {
-      return new Promise(function (resolve) {
-        var r = d.transaction(STORE, 'readonly').objectStore(STORE).get(key);
-        r.onsuccess = function () { resolve(r.result || null); };
-        r.onerror = function () { resolve(null); };
-      });
-    }).catch(function () { return null; });
+  // 一些 WebKit 写入 Blob/File 的路径会中断事务。兼容格式保存原始字节和文件信息，
+  // 不用 base64 扩大体积；所有转换在事务开始前完成，读旧 Blob 和新格式都兼容。
+  function encodeBinary(value) {
+    if (value instanceof Blob) return value.arrayBuffer().then(function (bytes) {
+      return { __prettierBinary: 1, bytes: bytes, type: value.type, name: value.name || '', lastModified: value.lastModified || 0 };
+    });
+    if (!value || typeof value !== 'object' || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return Promise.resolve(value);
+    var out = Array.isArray(value) ? [] : {};
+    return Object.keys(value).reduce(function (chain, key) {
+      return chain.then(function () { return encodeBinary(value[key]); }).then(function (next) { out[key] = next; });
+    }, Promise.resolve()).then(function () { return out; });
   }
-
-  function cachePut(key, blob, required) {
+  function decodeBinary(value) {
+    if (!value || typeof value !== 'object' || value instanceof Blob || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return value;
+    if (value.__prettierBinary === 1 && value.bytes instanceof ArrayBuffer) {
+      if (value.name && typeof File !== 'undefined') return new File([value.bytes], value.name, { type: value.type || '', lastModified: value.lastModified || 0 });
+      var blob = new Blob([value.bytes], { type: value.type || '' });
+      if (value.name) { blob.name = value.name; blob.lastModified = value.lastModified || 0; }
+      return blob;
+    }
+    var out = Array.isArray(value) ? [] : {};
+    Object.keys(value).forEach(function (key) { out[key] = decodeBinary(value[key]); });
+    return out;
+  }
+  function hasBinary(value) {
+    if (value instanceof Blob) return true;
+    if (!value || typeof value !== 'object' || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return false;
+    return Object.keys(value).some(function (key) { return hasBinary(value[key]); });
+  }
+  function transientStorage(err) { return /^(AbortError|UnknownError|InvalidStateError|TransactionInactiveError|TimeoutError)$/.test(err.name); }
+  function writeCacheOnce(items) {
     return db().then(function (d) {
       return new Promise(function (resolve, reject) {
-        var t = d.transaction(STORE, 'readwrite');
-        t.objectStore(STORE).put(blob, key);
-        t.oncomplete = function () { resolve(); };
-        t.onerror = t.onabort = function () { reject(t.error || new Error('本地存储写入失败')); };
+        var t, firstError = null, done = false;
+        function finish(err) { if (done) return; done = true; clearTimeout(timer); if (err) reject(err); else resolve(); }
+        var timer = setTimeout(function () {
+          firstError = storageError('TimeoutError', '本机保存超时，事务未确认完成');
+          try { if (t) t.abort(); } catch (e) {}
+          finish(firstError);
+        }, 30000);
+        try {
+          t = d.transaction(STORE, 'readwrite');
+          t.oncomplete = function () { finish(); };
+          // error 冒泡时 transaction.error 可能仍为空，保留最先失败的 request.error。
+          t.onerror = function (ev) { firstError = firstError || (ev && ev.target && ev.target.error) || t.error; };
+          t.onabort = function () { finish(firstError || t.error || storageError('AbortError', '本机保存事务被中断')); };
+          var store = t.objectStore(STORE);
+          items.forEach(function (item) {
+            var r = store.put(item.value, item.key);
+            if (r) r.onerror = function () { firstError = firstError || r.error; };
+          });
+        } catch (err) {
+          try { if (t) t.abort(); } catch (e) {}
+          finish(err);
+        }
+      });
+    });
+  }
+  function writeCache(items, tried) {
+    var binary = items.some(function (item) { return hasBinary(item.value); });
+    var prepared = binaryWrites && binary ? encodeBinary(items) : Promise.resolve(items);
+    return prepared.then(writeCacheOnce).catch(function (err) {
+      if (tried || (!transientStorage(err) && !(binary && err.name === 'DataCloneError'))) throw err;
+      resetDB();
+      if (binary) binaryWrites = true;
+      return writeCache(items, true);
+    });
+  }
+  function describeStorageError(err) {
+    var name = err.name || 'UnknownError', hint;
+    if (name === 'QuotaExceededError') hint = '本机存储额度不足，请先导出照片备份，再释放其他文件的空间';
+    else if (name === 'SecurityError' || name === 'NotSupportedError') hint = '浏览器未允许本机数据库保存，请在普通浏览模式打开';
+    else if (name === 'DataCloneError') hint = '照片或记录格式无法写入本机数据库';
+    else if (transientStorage(err)) hint = '本机数据库保存被中断，请保持 app 在前台后重试';
+    else hint = '本机数据库未能完成保存';
+    var e = new Error(hint + '（' + name + '）：' + (err.message || name)); e.name = name; e.cause = err;
+    return e;
+  }
+  function readCache(key, tried) {
+    return db().then(function (d) {
+      return new Promise(function (resolve, reject) {
+        var r = d.transaction(STORE, 'readonly').objectStore(STORE).get(key);
+        r.onsuccess = function () { resolve(decodeBinary(r.result || null)); };
+        r.onerror = function () { reject(r.error || storageError('UnknownError', '本机读取失败')); };
       });
     }).catch(function (err) {
-      if (required) throw new Error('手机本地保存失败，请检查存储空间：' + (err.message || err));
+      if (tried || !transientStorage(err)) throw err;
+      resetDB(); return readCache(key, true);
     });
   }
-
-  function cacheBatch(items) {
-    return db().then(function (d) {
-      return new Promise(function (resolve, reject) {
-        var t = d.transaction(STORE, 'readwrite'), store = t.objectStore(STORE);
-        items.forEach(function (item) { store.put(item.value, item.key); });
-        t.oncomplete = function () { resolve(); };
-        t.onerror = t.onabort = function () { reject(t.error || new Error('本机记录保存失败')); };
-      });
+  function cacheGet(key, required) {
+    return readCache(key).catch(function (err) { if (required) throw describeStorageError(err); return null; });
+  }
+  function cachePut(key, value, required) {
+    return writeCache([{ key: key, value: value }]).catch(function (err) {
+      if (required) throw describeStorageError(err);
     });
   }
+  function cacheBatch(items) { return writeCache(items).catch(function (err) { throw describeStorageError(err); }); }
 
   function cacheList(prefix) {
     return db().then(function (d) {
@@ -646,7 +725,7 @@
         request.onsuccess = function () {
           var cursor = request.result;
           if (!cursor) { resolve(rows); return; }
-          if (String(cursor.key).indexOf(prefix) === 0) rows.push({ key: cursor.key, value: cursor.value });
+          if (String(cursor.key).indexOf(prefix) === 0) rows.push({ key: cursor.key, value: decodeBinary(cursor.value) });
           cursor.continue();
         };
         request.onerror = function () { reject(request.error || new Error('本机照片读取失败')); };

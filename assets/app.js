@@ -3422,7 +3422,7 @@
   function restoreQueue() {
     if (queueRestored) return Promise.resolve();
     queueRestored = true;
-    return GitStore.cacheGet('__jobs').then(function (jobs) {
+    return GitStore.cacheGet('__jobs', true).then(function (jobs) {
       (Array.isArray(jobs) ? jobs : []).forEach(function (j) {
         j.state = 'failed';
         j.error = j.kind === 'list' ? '上次保存被中断，记录已保留，请重试' : '上次处理被中断，照片已保留，请重试';
@@ -3430,7 +3430,7 @@
       });
       applyQueuedLists();
       renderQueue();
-    });
+    }).catch(function (err) { queueRestored = false; throw err; });
   }
 
   function enqueue(job) {
@@ -3483,7 +3483,7 @@
         job.error = why;
         running = false;
         renderQueue();
-        toast('处理失败：' + why + '，照片仍在队列中，可以重试', true);
+        toast('处理失败，详情在下方任务中。照片已保留，可重试', true);
         return persistQueue().catch(function () {});
       }
       return GitStore.goLocal(seedFromCache())
@@ -3593,7 +3593,7 @@
   function renderQueue() {
     var host = $('#queue');
     host.classList.toggle('mini', queueMini);
-    if (!queue.length) { host.hidden = true; host.innerHTML = ''; return; }
+    if (!queue.length) { host.hidden = true; host.innerHTML = ''; syncQueueHeight(); return; }
     host.hidden = false;
     if (queueMini) {
       var running0 = queue.filter(function (j) { return j.state === 'running'; })[0];
@@ -3602,6 +3602,7 @@
       $('#qExpand').addEventListener('click', function () {
         queueMini = false; renderQueue();
       });
+      syncQueueHeight();
       return;
     }
     host.innerHTML = queue.map(function (j, i) {
@@ -3615,6 +3616,14 @@
         '<span class="qtxt">' + esc(j.label) + ' · ' +
         esc(j.state === 'running' ? (j.step || '上传中') : '排队中') + '</span></div>';
     }).join('');
+    syncQueueHeight();
+  }
+
+  function syncQueueHeight() {
+    var host = $('#queue');
+    if (!host) return;
+    var height = host.hidden || !host.childElementCount ? 0 : Math.ceil(host.getBoundingClientRect().height) + 12;
+    document.documentElement.style.setProperty('--queue-h', height + 'px');
   }
 
   function bindQueue() {
@@ -6782,6 +6791,8 @@
     bindZoom();
     bindQueue();
     bindQueueSwipe();
+    if (window.ResizeObserver) new ResizeObserver(syncQueueHeight).observe($('#queue'));
+    window.addEventListener('resize', syncQueueHeight);
     checkForUpdate();
 
     if (state.owner && state.repo) {
