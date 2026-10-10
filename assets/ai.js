@@ -27,8 +27,9 @@
 
   var QWEN_ENDPOINT = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
   var QWEN_MODEL = 'qwen3-vl-plus';
-  // 从新到旧试，成功的那个记下来，下次先用它，省得每次都撞一遍 404
-  var GEMINI_MODELS = ['gemini-3.6-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
+  // 仅作列表接口不可用时的兼容候选；正常使用 models.list 返回的名称。
+  var GEMINI_MODELS = ['gemini-flash-latest', 'gemini-3.6-flash', 'gemini-2.5-flash'];
+  var geminiCatalog = null;
 
   var LS_PROVIDER = 'prettier.ai.provider';
   var LS_KEY_QWEN = 'prettier.ai.key';          // 沿用旧键，已填过的不用重填
@@ -45,7 +46,12 @@
     return lsGet((p || provider()) === 'gemini' ? LS_KEY_GEMINI : LS_KEY_QWEN);
   }
   function setKey(v, p) {
-    lsSet((p || provider()) === 'gemini' ? LS_KEY_GEMINI : LS_KEY_QWEN, v);
+    var selected = p || provider();
+    if (selected === 'gemini' && getKey(selected) !== String(v || '').trim()) {
+      geminiCatalog = null;
+      lsSet(LS_GEMINI_MODEL, '');
+    }
+    lsSet(selected === 'gemini' ? LS_KEY_GEMINI : LS_KEY_QWEN, String(v || '').trim());
   }
   function modelName() {
     return provider() === 'gemini'
@@ -53,13 +59,15 @@
       : QWEN_MODEL;
   }
 
-  function visionRequest(url, opts, consume) {
+  function visionRequest(url, opts, consume, timeout) {
     var controller = new AbortController();
-    var timer = setTimeout(function () { controller.abort(); }, 90000);
+    var timer = setTimeout(function () { controller.abort(); }, timeout || 90000);
     opts.signal = controller.signal;
     return fetch(url, opts).then(consume).catch(function (err) {
       if (err.name === 'AbortError') throw new Error('识别超时，请检查网络后重试');
-      if (err instanceof TypeError) throw new Error('连不上识别服务，请检查网络或 API Key 所属地区');
+      if (err.name === 'TypeError') throw new Error(url.indexOf('generativelanguage.googleapis.com') >= 0
+        ? '连不上 Gemini API（网络或跨域请求失败），请确认当前设备能访问 Google API；更换模型不能解决连接问题'
+        : '连不上百炼识别服务，请检查网络');
       throw err;
     }).finally(function () { clearTimeout(timer); });
   }
@@ -102,67 +110,130 @@
     });
   }
 
-  function callGemini(key, b64s, prompt) {
-    var remembered = lsGet(LS_GEMINI_MODEL);
-    var models = remembered
-      ? [remembered].concat(GEMINI_MODELS.filter(function (m) { return m !== remembered; }))
-      : GEMINI_MODELS.slice();
+  function geminiError(res, key, model) {
+    return res.text().then(function (raw) {
+      var data;
+      try { data = JSON.parse(raw); } catch (err) { data = {}; }
+      var api = data.error || {};
+      var message = String(api.message || raw || '没有错误详情').split(key).join('[已隐藏]');
+      var details = Array.isArray(api.details) ? api.details : [];
+      var reasons = details.map(function (d) { return d.reason || ''; }).join(' ');
+      var hint = 'Gemini 请求失败';
+      if (res.status === 401 || /API_KEY_INVALID|API_KEY_EXPIRED/.test(reasons) || /API key not valid|API key expired/i.test(message)) {
+        hint = 'Gemini API Key 无效或已过期';
+      } else if (/API_KEY_HTTP_REFERRER_BLOCKED/.test(reasons)) {
+        hint = 'Gemini Key 的网站限制没有允许当前 App 域名';
+      } else if (/API_KEY_SERVICE_BLOCKED|API_KEY_IP_ADDRESS_BLOCKED|API_KEY_ANDROID_APP_BLOCKED|API_KEY_IOS_APP_BLOCKED/.test(reasons)) {
+        hint = 'Gemini Key 的 API 或应用限制拒绝了这次调用';
+      } else if (/leaked|suspended|blocked/i.test(message) && res.status === 403) {
+        hint = 'Gemini Key 已被 Google 停用';
+      } else if (/location|region|country/i.test(message) && (res.status === 400 || res.status === 403)) {
+        hint = '当前出口地区不支持 Gemini API';
+      } else if (res.status === 403) {
+        hint = 'Gemini 项目或 Key 没有调用权限';
+      } else if (res.status === 429) {
+        hint = /limit:\s*0|quotaValue[^0-9]*0(?:[^0-9]|$)/i.test(message + JSON.stringify(details))
+          ? 'Gemini 这个模型的可用配额为 0，请检查项目配额与计费状态'
+          : 'Gemini 配额不足或达到请求速率上限';
+      } else if (res.status === 402 || /billing|payment|prepay|credit/i.test(message)) {
+        hint = 'Gemini 项目需要检查计费或余额';
+      } else if (res.status === 404) {
+        hint = 'Gemini 模型不存在或不支持当前接口';
+      } else if (res.status >= 500) {
+        hint = 'Gemini 服务暂时不可用';
+      }
+      var error = new Error(hint + '（HTTP ' + res.status + (model ? '，' + model : '') + '）\nGoogle：' + message.slice(0, 1000));
+      error.status = res.status;
+      error.modelQuota = res.status === 429 && details.some(function (d) {
+        return (d.violations || []).some(function (v) { return v.quotaDimensions && v.quotaDimensions.model; });
+      });
+      return error;
+    });
+  }
 
+  function geminiModels(key) {
+    if (geminiCatalog && geminiCatalog.key === key && Date.now() - geminiCatalog.at < 1800000) {
+      return Promise.resolve(geminiCatalog.models.slice());
+    }
+    var available = [];
+    function page(token) {
+      var url = 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000' +
+        (token ? '&pageToken=' + encodeURIComponent(token) : '');
+      return visionRequest(url, { headers: { 'x-goog-api-key': key } }, function (res) {
+        if (!res.ok) return geminiError(res, key, '').then(function (err) { throw err; });
+        return res.json();
+      }, 20000).then(function (data) {
+        (data.models || []).forEach(function (m) {
+          var name = String(m.name || '').replace(/^models\//, '');
+          // 只选 Flash 通用图文模型，排除图片生成、语音、实时及嵌入模型。
+          if ((m.supportedGenerationMethods || []).indexOf('generateContent') >= 0 &&
+              /^gemini-.*flash/.test(name) && !/image|tts|audio|live|native|embedding|robotics/.test(name)) {
+            if (available.indexOf(name) < 0) available.push(name);
+          }
+        });
+        if (data.nextPageToken) return page(data.nextPageToken);
+        if (!available.length) throw new Error('Gemini API 没有返回支持图文识别的 Flash 模型');
+        var preferred = [lsGet(LS_GEMINI_MODEL)].concat(GEMINI_MODELS);
+        var ordered = preferred.filter(function (m, i) { return m && available.indexOf(m) >= 0 && preferred.indexOf(m) === i; });
+        available.forEach(function (m) { if (ordered.indexOf(m) < 0) ordered.push(m); });
+        geminiCatalog = { key: key, at: Date.now(), models: ordered };
+        return ordered.slice();
+      });
+    }
+    return page('').catch(function (err) {
+      // 某些 Key 只允许推理，列表接口 403 时仍尝试原有模型。
+      if (err.status === 403 || err.status === 404 || err.status >= 500) return GEMINI_MODELS.slice();
+      throw err;
+    });
+  }
+
+  function callGemini(key, b64s, prompt) {
     var parts = b64s.map(function (b) {
-      return { inline_data: { mime_type: b.mime, data: b.data } };
+      return { inlineData: { mimeType: b.mime, data: b.data } };
     });
     parts.push({ text: prompt });
-
-    var lastErr = null;
-    // 依次试，404 就换下一个（模型名会随版本下线）
-    return models.reduce(function (chain, model) {
-      return chain.then(function (done) {
-        if (done) return done;
-        var url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
-                  model + ':generateContent?key=' + encodeURIComponent(key);
-        return visionRequest(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: parts }],
-            generationConfig: { responseMimeType: 'application/json' },
-          }),
-        }, function (res) {
-          if (res.status === 404) { lastErr = new Error('模型 ' + model + ' 不存在'); return null; }
-          if (res.status === 503 || res.status === 500) {
-            // Google 那边过载，不是你的问题。换下一个模型再试。
-            lastErr = new Error('Gemini 服务器忙（' + res.status + '），稍后再试或先用百炼');
-            return null;
-          }
-          if (!res.ok) {
-            return res.text().then(function (t) {
-              if (res.status === 400 && /API key/i.test(t)) throw new Error('Gemini API Key 不对');
-              if (res.status === 429) throw new Error('调用太频繁，等一会儿再试');
-              throw new Error('Gemini ' + res.status + '：' + t.slice(0, 160));
+    return geminiModels(key).then(function (models) {
+      var lastErr = null;
+      return models.slice(0, 4).reduce(function (chain, model) {
+        return chain.then(function (done) {
+          if (done) return done;
+          var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
+          return visionRequest(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts: parts }],
+              generationConfig: { responseMimeType: 'application/json' },
+            }),
+          }, function (res) {
+            if (!res.ok) return geminiError(res, key, model).then(function (err) {
+              if (res.status === 404 || res.status === 500 || res.status === 503 || err.modelQuota) {
+                lastErr = err;
+                if (res.status === 404) geminiCatalog = null;
+                return null;
+              }
+              throw err;
             });
-          }
-          return res.json().then(function (d) {
-            /* 必须把所有 part 拼起来，不能只取 parts[0]。
-               带思考的模型会先返回一个没有 text 的 part，
-               只看第一个就会误判成「没有返回内容」—— 踩过这个坑。 */
-            var parts = (d && d.candidates && d.candidates[0] &&
-                         d.candidates[0].content && d.candidates[0].content.parts) || [];
-            var t = parts.map(function (x) { return x.text || ''; }).join('');
-            if (!t) throw new Error('模型没有返回内容');
-            lsSet(LS_GEMINI_MODEL, model);   // 记住能用的那个
-            return t;
+            return res.json().then(function (data) {
+              var feedback = data.promptFeedback || {};
+              var candidate = (data.candidates || [])[0] || {};
+              if (feedback.blockReason) throw new Error('Gemini 拒绝了这次识别：' + feedback.blockReason);
+              if (candidate.finishReason && candidate.finishReason !== 'STOP') {
+                throw new Error('Gemini 未完整返回识别结果：' + candidate.finishReason);
+              }
+              var returned = (candidate.content && candidate.content.parts) || [];
+              var text = returned.filter(function (part) { return !part.thought; })
+                .map(function (part) { return part.text || ''; }).join('');
+              if (!text.trim()) throw new Error('Gemini 没有返回识别结果，请重试');
+              lsSet(LS_GEMINI_MODEL, model);
+              return text;
+            });
           });
-        }).catch(function (e) {
-          // 连不上：给一句能直接行动的话，而不是原始网络错误
-          if (e instanceof TypeError) {
-            throw new Error('连不上 Gemini。它在国内需要代理，手机上通常用不了 —— 可以在设置里切回百炼。');
-          }
-          throw e;
         });
+      }, Promise.resolve(null)).then(function (text) {
+        if (!text) throw (lastErr || new Error('Gemini 可用模型都未完成识别'));
+        return text;
       });
-    }, Promise.resolve(null)).then(function (t) {
-      if (!t) throw (lastErr || new Error('Gemini 全部模型都不可用'));
-      return t;
     });
   }
 
