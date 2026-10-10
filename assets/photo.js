@@ -29,10 +29,17 @@
     return new Promise(function (resolve, reject) {
       var url = URL.createObjectURL(blob);
       var img = new Image();
-      img.onload = function () { URL.revokeObjectURL(url); resolve(img); };
-      img.onerror = function () {
+      var timer = setTimeout(function () {
+        img.onload = img.onerror = null;
+        img.src = '';
         URL.revokeObjectURL(url);
-        reject(new Error('这张图读不了（HEIC 只有 Safari 能解）'));
+        reject(new Error('照片读取超时，请重新选择这张照片'));
+      }, 30000);
+      img.onload = function () { clearTimeout(timer); URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = function () {
+        clearTimeout(timer);
+        URL.revokeObjectURL(url);
+        reject(new Error('无法读取这张照片；HEIC/HEIF 请用 Safari 打开，或在相册中导出 JPEG 后重试'));
       };
       img.src = url;
     });
@@ -41,8 +48,12 @@
   function averageLuma(ctx, w, h) {
     // 抽样足够判断整体明暗，不必遍历几百万像素
     var sample = 32;
-    var data = ctx.getImageData(0, 0, w, h).data;
-    var step = Math.max(1, Math.floor(Math.sqrt(w * h / (sample * sample))));
+    var sampleCanvas = document.createElement('canvas');
+    sampleCanvas.width = sampleCanvas.height = sample;
+    var sampleCtx = sampleCanvas.getContext('2d');
+    sampleCtx.drawImage(ctx.canvas, 0, 0, sample, sample);
+    var data = sampleCtx.getImageData(0, 0, sample, sample).data;
+    var step = 1;
     var sum = 0, n = 0;
     for (var i = 0; i < data.length; i += 4 * step) {
       sum += (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255;
@@ -51,7 +62,7 @@
     return n ? sum / n : TARGET_LUMA;
   }
 
-  function normalize(blob) {
+  function normalizeOne(blob) {
     return loadImage(blob).then(function (img) {
       var scale = Math.min(1, MAX_EDGE / Math.max(img.naturalWidth, img.naturalHeight));
       var w = Math.max(1, Math.round(img.naturalWidth * scale));
@@ -60,6 +71,9 @@
       var canvas = document.createElement('canvas');
       canvas.width = w; canvas.height = h;
       var ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('照片处理失败，请关闭其他页面后重试');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, w, h);
       ctx.drawImage(img, 0, 0, w, h);
 
       var luma = averageLuma(ctx, w, h);
@@ -71,13 +85,21 @@
         ctx.filter = 'none';
       }
 
-      return new Promise(function (resolve) {
+      return new Promise(function (resolve, reject) {
         canvas.toBlob(function (out) {
-          // 转换失败就退回原图 —— 宁可亮一点，也不能把照片弄丢
-          resolve({ blob: out || blob, width: w, height: h, gain: gain });
+          canvas.width = canvas.height = 1;
+          if (!out) { reject(new Error('照片转换失败，请重新选择或导出 JPEG 后重试')); return; }
+          resolve({ blob: out, width: w, height: h, gain: gain });
         }, 'image/jpeg', QUALITY);
       });
     });
+  }
+
+  var processing = Promise.resolve();
+  function normalize(blob) {
+    var next = processing.then(function () { return normalizeOne(blob); });
+    processing = next.catch(function () {});
+    return next;
   }
 
   window.PrettierPhoto = { normalize: normalize, MAX_EDGE: MAX_EDGE };

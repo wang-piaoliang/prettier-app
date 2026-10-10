@@ -48,7 +48,10 @@
     if (cfg.token) headers.Authorization = 'Bearer ' + cfg.token;
     if (opts.body) headers['Content-Type'] = 'application/json';
 
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 45000);
     return fetch(API + pathname, {
+      signal: controller.signal,
       method: opts.method || 'GET',
       headers: headers,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -94,11 +97,17 @@
       }
       if (!res.ok) {
         return res.text().then(function (t) {
-          throw new Error('GitHub ' + res.status + '：' + t.slice(0, 200));
+          var err = new Error('GitHub ' + res.status + '：' + t.slice(0, 200));
+          err.status = res.status;
+          err.noRetry = res.status < 500;
+          throw err;
         });
       }
       return res.status === 204 ? null : res.json();
-    });
+    }).catch(function (err) {
+      if (err.name === 'AbortError') throw new Error('上传或同步超时，请检查网络后重试');
+      throw err;
+    }).finally(function () { clearTimeout(timer); });
   }
 
   function repoPath(p) {
@@ -170,8 +179,8 @@
 
   function localSave() {
     return Promise.all([
-      cachePut(K_SNAP, { json: L.json, tree: L.tree }),
-      cachePut(K_OUT, { photos: L.photos, deletes: L.deletes, dirty: L.dirty, fresh: L.fresh }),
+      cachePut(K_SNAP, { json: L.json, tree: L.tree }, true),
+      cachePut(K_OUT, { photos: L.photos, deletes: L.deletes, dirty: L.dirty, fresh: L.fresh }, true),
     ]);
   }
 
@@ -216,7 +225,7 @@
             var key = 'local:' + f.path;
             L.tree[f.path] = key;          // photoURL 靠 tree 找 sha，本地也给一个
             uniqPush(L.photos, f.path);
-            return cachePut(key, f.blob);
+            return cachePut(key, f.blob, true);
           }
           try { L.json[f.path] = JSON.parse(f.text); } catch (e) { L.json[f.path] = f.text; }
           uniqPush(L.dirty, f.path);
@@ -276,7 +285,8 @@
           return L.photos.reduce(function (chain, p) {
             return chain.then(function () {
               return cacheGet('local:' + p).then(function (b) {
-                if (b) files.push({ path: p, blob: b });
+                if (!b) throw new Error('待上传照片在本机找不到：' + p + '，请重新选择这张照片');
+                files.push({ path: p, blob: b });
               });
             });
           }, Promise.resolve()).then(function () {
@@ -509,15 +519,17 @@
     }).catch(function () { return null; });
   }
 
-  function cachePut(key, blob) {
+  function cachePut(key, blob, required) {
     return db().then(function (d) {
-      return new Promise(function (resolve) {
+      return new Promise(function (resolve, reject) {
         var t = d.transaction(STORE, 'readwrite');
         t.objectStore(STORE).put(blob, key);
         t.oncomplete = function () { resolve(); };
-        t.onerror = function () { resolve(); };
+        t.onerror = t.onabort = function () { reject(t.error || new Error('本地存储写入失败')); };
       });
-    }).catch(function () {});
+    }).catch(function (err) {
+      if (required) throw new Error('手机本地保存失败，请检查存储空间：' + (err.message || err));
+    });
   }
 
   function cacheClear() {

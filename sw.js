@@ -5,7 +5,7 @@
 
    改动外壳后把 VERSION 加一，旧缓存会在 activate 时清掉。 */
 
-const VERSION = 'prettier-v82';
+const VERSION = 'prettier-v83';
 
 // 路径一律用 './'，不要写成 index.html：
 // Cloudflare 的静态资源托管会把 /index.html 307 重定向到 /，
@@ -15,6 +15,10 @@ const SHELL = [
   './offline.html',
   './assets/app.css',
   './assets/app.js',
+  './assets/store.js',
+  './assets/ai.js',
+  './assets/photo.js',
+  './assets/version.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
@@ -73,6 +77,6 @@ self.addEventListener('fetch', (event) => {
         caches.open(VERSION).then((c) => c.put(req, copy));
       }
       return res;
-    }).catch(() => caches.match(req))
+    }).catch(() => caches.match(req, { ignoreSearch: true }))
   );
 });

@@ -2813,7 +2813,7 @@
       }
       var copy = {};
       Object.keys(d).forEach(function (k) {
-        if (k !== 'photos') copy[k] = d[k];
+        if (k !== 'photos' && k !== 'processing') copy[k] = d[k];
       });
       // preview 是 objectURL，重启后就失效了，只留 blob
       copy.photos = (d.photos || []).map(function (p) {
@@ -2831,6 +2831,7 @@
       d.photos = (d.photos || []).map(function (p) {
         return Object.assign({}, p, { preview: URL.createObjectURL(p.blob) });
       });
+      d.processing = 0;
       state.draft = d;
       return d;
     }).catch(function () { return null; });
@@ -3153,6 +3154,7 @@
 
   function runAI() {
     var d = state.draft;
+    if (d.processing) return toast('照片还在处理中，请稍等', true);
     if (!d.photos.length) return toast('先加照片', true);
 
     if (!ensureKey()) return;
@@ -3367,13 +3369,17 @@
 
   function onFilesPicked(files) {
     var d = state.draft;
-    var jobs = Array.prototype.slice.call(files).map(function (f) {
-      return processImage(f).then(function (p) { d.photos.push(p); })
-        .catch(function (err) { toast(err.message, true); });
-    });
-    // 时间用上传当下的，不从照片元数据里取 —— 拍完立刻传，当下时间更可靠，
-    // 而且相册里的 lastModified 可能是导入时间，不是拍摄时间。
-    Promise.all(jobs).then(function () { drawPicker(); saveDraft2(); });
+    var picked = Array.prototype.slice.call(files);
+    d.processing = (d.processing || 0) + picked.length;
+    picked.reduce(function (chain, f, i) {
+      return chain.then(function () {
+        toast('处理照片 ' + (i + 1) + '/' + picked.length);
+        return processImage(f).then(function (p) {
+          d.photos.push(p);
+          if (state.draft === d) { drawPicker(); saveDraft2(); }
+        }).catch(function (err) { toast((f.name || '照片') + '：' + err.message, true); });
+      }).then(function () { d.processing--; });
+    }, Promise.resolve());
   }
 
   function makeEntryId(date) {
@@ -3395,23 +3401,64 @@
 
   var queue = [];
   var running = false;
+  var queueWrites = Promise.resolve();
+  var queueRestored = false;
+
+  function persistQueue() {
+    var saved = queue.map(function (j) {
+      var copy = {};
+      Object.keys(j).forEach(function (k) { if (k !== 'run') copy[k] = j[k]; });
+      return copy;
+    });
+    var next = queueWrites.catch(function () {}).then(function () {
+      return GitStore.cachePut('__jobs', saved, true);
+    });
+    queueWrites = next;
+    return next;
+  }
+
+  function restoreQueue() {
+    if (queueRestored) return Promise.resolve();
+    queueRestored = true;
+    return GitStore.cacheGet('__jobs').then(function (jobs) {
+      (Array.isArray(jobs) ? jobs : []).forEach(function (j) {
+        j.state = 'failed';
+        j.error = '上次处理被中断，照片已保留，请重试';
+        queue.push(j);
+      });
+      renderQueue();
+    });
+  }
 
   function enqueue(job) {
+    job.state = 'saving';
+    job.step = '保存待传照片';
     queue.push(job);
     renderQueue();
-    pump();
+    return persistQueue().then(function () {
+      job.state = 'queued';
+      renderQueue();
+      pump();
+    }).catch(function (err) {
+      job.state = 'failed';
+      job.error = err.message || String(err);
+      renderQueue();
+      toast('照片暂存失败：' + job.error + '，请保留页面并重试', true);
+      throw err;
+    });
   }
 
   function pump() {
-    if (running || !queue.length) return;
+    if (running) return;
+    var job = queue.find(function (j) { return j.state === 'queued'; });
+    if (!job) return;
     running = true;
-    var job = queue[0];
     job.state = 'running';
     job.step = '准备…';
     renderQueue();
 
-    runJob(job).then(function () {
-      queue.shift();
+    persistQueue().then(function () { return runJob(job); }).then(function () {
+      queue.splice(queue.indexOf(job), 1);
       running = false;
       renderQueue();
       renderPending();
@@ -3420,22 +3467,31 @@
          你正在别处看，识别一完成就被拽到产品页去了。
          只有你本来就停在那一页时才重画。 */
       var back = job.refreshView || 'timeline';
-      return loadData().then(function () {
+      return persistQueue().then(loadData).then(function () {
         if (state.view === back) refresh(back);
-      });
+      }).catch(function (err) { toast('已保存，但刷新失败：' + (err.message || err), true); });
     }).catch(function (err) {
       /* ⚠️ 队列只活在内存里。提交失败就这么放着，人一刷新或关掉页面，
          照片连同记录一起没了 —— 而照片是当场拍的，丢了补不回来。
          所以失败要立刻转存本地（IndexedDB），等下次连上再补传。 */
       var why = (err.step ? '「' + err.step + '」' : '') + (err.message || err);
+      if (job.kind || job.run) {
+        job.state = 'failed';
+        job.error = why;
+        running = false;
+        renderQueue();
+        toast('处理失败：' + why + '，照片仍在队列中，可以重试', true);
+        return persistQueue().catch(function () {});
+      }
       return GitStore.goLocal(seedFromCache())
         .then(function () { return runJob(job); })     // 现在会落到本地
         .then(function () {
-          queue.shift();
+          queue.splice(queue.indexOf(job), 1);
           running = false;
           renderQueue();
           renderPending();
           toast('云端没传成功，已存在手机上，等会儿自动补传', true);
+          return persistQueue();
         })
         .catch(function (e2) {
           // 连本地都存不下才算真失败
@@ -3452,6 +3508,8 @@
     /* 带 run 的是自定义任务（比如产品识别）。
        放进同一个队列，切页面也照跑完 —— 以前识别写在产品页那个元素里，
        一切走就断了，等于白传。 */
+    if (job.kind === 'scan') return scanProductsJob(job.sourceFiles, function (t) { job.step = t; renderQueue(); }, job);
+    if (job.kind === 'shoot') return shootProductJob(job.pid, job.sourceFiles, function (t) { job.step = t; renderQueue(); }, job);
     if (job.run) {
       return job.run(function (t) { job.step = t; renderQueue(); });
     }
@@ -3552,22 +3610,25 @@
       var r = ev.target.closest('[data-retry]');
       if (r) {
         var j = queue[Number(r.dataset.retry)];
-        if (j) { j.state = 'queued'; j.error = ''; renderQueue(); pump(); }
+        if (j) { j.state = 'saving'; j.error = ''; renderQueue();
+          persistQueue().then(function () { j.state = 'queued'; pump(); })
+            .catch(function (err) { j.state = 'failed'; j.error = err.message; renderQueue(); }); }
         return;
       }
       var d = ev.target.closest('[data-drop]');
       if (d) {
         var idx = Number(d.dataset.drop);
-        if (confirm('丢弃这次上传？照片会丢失。')) { queue.splice(idx, 1); renderQueue(); pump(); }
+        if (confirm('丢弃这次上传？照片会丢失。')) { queue.splice(idx, 1); renderQueue();
+          persistQueue().then(pump).catch(function (err) { toast(err.message, true); }); }
       }
     });
   }
 
   function saveDraft() {
     var d = state.draft;
+    if (d.processing) return toast('照片还在处理中，请稍等再保存', true);
     if (!d.date) return toast('先选时间', true);
     // 交给队列之后这份草稿就没用了，别留着让下次启动又跳进「记一条」
-    clearSavedDraft();
     var hasPhoto = d.photos.length || (d.keepPhotos && d.keepPhotos.length);
     if (!d.editingId && !hasPhoto && !d.note) {
       return toast('至少加一张照片或写点备注', true);
@@ -3616,6 +3677,8 @@
     if (at >= 0) list[at] = optimistic; else list.push(optimistic);
     if (state.data) state.data.entries = list;
 
+    var saveBtn = $('#saveBtn');
+    if (saveBtn) saveBtn.disabled = true;
     enqueue({
       entry: entry,
       files: files,
@@ -3623,11 +3686,12 @@
       label: fmtDate(d.date) + ' ' + fmtTime(d.at),
       message: (d.editingId ? '修改 ' : '记录 ') + d.date + '（' + id + '）',
       state: 'queued',
-    });
-
-    // 预览用的 blob URL 交给时间线继续用，这里不能 revoke
-    state.draft = null;
-    go('timeline');
+    }).then(function () {
+      // 待传照片已持久保存，才能清空草稿。
+      clearSavedDraft();
+      if (state.draft === d) state.draft = null;
+      go('timeline');
+    }).catch(function () { if (saveBtn) saveBtn.disabled = false; });
   }
 
   function editEntry(id) {
@@ -5115,13 +5179,15 @@
     var removed = before.filter(function (b) { return !kept[b.id]; })
       .map(function (b) { return b.id; });
 
-    // 先本地生效，界面立刻更新；提交在后面慢慢走
-    if (state.data) state.data.products = list;
-    refresh('products');
+    // 保存成功后再更新界面，失败时保留原数据供重试。
 
     // 照片这类新文件只是新增，不会冲突，先单独提交
     var pre = (extraFiles && extraFiles.length)
-      ? GitStore.commit(extraFiles, message + '（照片）')
+      ? GitStore.commit(extraFiles, message + '（照片）').catch(function () {
+          return GitStore.goLocal(seedFromCache()).then(function () {
+            return GitStore.commit(extraFiles, message + '（照片）');
+          });
+        })
       : Promise.resolve();
 
     return pre.then(function () {
@@ -5130,12 +5196,28 @@
         var rp = base.products || [];
         var seen = {};
         var out = rp.filter(function (p) { return removed.indexOf(p.id) < 0; })
-          .map(function (p) { seen[p.id] = 1; return kept[p.id] || p; });
+          .map(function (p) {
+            seen[p.id] = 1;
+            var next = kept[p.id];
+            var old = before.find(function (b) { return b.id === p.id; });
+            if (!next || !old) return next || p;
+            var merged = Object.assign({}, p);
+            Object.keys(Object.assign({}, old, next)).forEach(function (k) {
+              if (JSON.stringify(old[k]) !== JSON.stringify(next[k])) {
+                if (next[k] === undefined) delete merged[k]; else merged[k] = next[k];
+              }
+            });
+            return merged;
+          });
         list.forEach(function (p) { if (!seen[p.id]) out.push(p); });
         base.products = out;
         return base;
       }, message);
-    }).then(loadData).then(function () { refresh('products'); });
+    }).then(function () {
+      if (state.data) state.data.products = list;
+      return loadData().then(function () { if (state.view === 'products') refresh('products'); })
+        .catch(function (err) { toast('已保存，但刷新失败：' + (err.message || err), true); });
+    });
   }
 
   /* 把一件产品并进另一件：购买记录、照片、评价、款式全部并过去。
@@ -5554,7 +5636,7 @@
         msg.textContent = '识别中…';
         /* 和补拍一样一张一张来：整批送给模型只会回来一件，
            传 5 张订单截图就只剩 1 单。 */
-        var blobs = [], hits = 0;
+        var blobs = [], hits = 0, errors = [];
         newBuys = [];
         files.reduce(function (prev, f, i) {
           return prev.then(function () {
@@ -5573,12 +5655,12 @@
               });
               var short = box.querySelector('[data-f="short"]');
               if (short && !short.value) short.value = x.short || ((x.brand || '') + (x.name || ''));
-              var buy = buyFrom(x);
-              if (buy) newBuys = mergeBuys(newBuys, [buy]).list;
+              newBuys = mergeBuys(newBuys, buysFrom(x)).list;
             });
-          }).catch(function () { /* 单张失败不拖累整批 */ });
+          }).catch(function (err) { errors.push(err.message || String(err)); });
         }, Promise.resolve()).then(function () {
           newShots = blobs;
+          if (errors.length) { msg.textContent = '已保留 ' + blobs.length + ' 张照片，识别失败：' + errors[0]; return; }
           if (!hits) { msg.textContent = '没认出产品信息，手填也行'; return; }
           msg.textContent = newBuys.length
             ? '已填入，还认出 ' + newBuys.length + ' 笔购买，检查一下再入库'
@@ -5852,18 +5934,20 @@
     enqueue({
       label: who + ' · ' + list.length + ' 张',
       refreshView: 'products',
-      run: function (step) { return shootProductJob(pid, list, step); },
-    });
+      kind: 'shoot', pid: pid, sourceFiles: list, completed: [],
+    }).catch(function () {});
   }
 
-  function shootProductJob(pid, list, step) {
-    var added = 0, filled = 0, hits = 0, noDate = 0;
+  function shootProductJob(pid, list, step, job) {
+    var added = 0, filled = 0, hits = 0, noDate = 0, errors = [];
 
     return list.reduce(function (prev, f, i) {
       return prev.then(function () {
+        if (job && job.completed.indexOf(i) >= 0) return null;
         step('第 ' + (i + 1) + '/' + list.length + ' 张');
         return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
       }).then(function (blob) {
+        if (!blob) return null;
         // 文件名是内容指纹：同一张再传一次，路径一样，不会挂成两张
         return photoPath('products/' + pid + '-', blob).then(function (path) {
           return PrettierAI.identifyProducts([blob]).then(function (found) {
@@ -5880,12 +5964,14 @@
               });
             }
             return { path: path, blob: blob, fields: x || null, buys: buys };
-          }).catch(function () {
+          }).catch(function (err) {
+            errors.push('第 ' + (i + 1) + ' 张：' + (err.message || err));
             // 认不出来也要把照片存下 —— 图是当场传的，丢了补不回来
-            return { path: path, blob: blob, fields: null, buys: [] };
+            return { path: path, blob: blob, fields: null, buys: [], recognitionError: true };
           });
         });
       }).then(function (one) {
+        if (!one) return;
         /* ⚠ 每张单独保存。攒到最后再存，中断一次就全没了。 */
         var next = allProducts().map(function (p) {
           if (p.id !== pid) return p;
@@ -5909,18 +5995,19 @@
           return Object.assign({}, p, add);
         });
         return saveProducts(next, '产品库：补充第 ' + (i + 1) + '/' + list.length + ' 张',
-                            [{ path: one.path, blob: one.blob }]);
-      }).catch(function () {
-        // 单张失败不拖累后面的
-      });
+                            [{ path: one.path, blob: one.blob }]).then(function () {
+          if (job && !one.recognitionError) { job.completed.push(i); return persistQueue(); }
+        });
+      }).catch(function (err) { errors.push('第 ' + (i + 1) + ' 张：' + (err.message || err)); });
     }, Promise.resolve()).then(function () {
+      if (errors.length) throw new Error(errors.length + ' 张未完成。' + errors[0]);
       var say = [];
       if (added) say.push('记下 ' + added + ' 笔购买');
       if (filled) say.push('补全 ' + filled + ' 笔');
       // 认出了金额却没认出日期的，明说跳过了，别让人以为都记上了
       if (noDate) say.push('有 ' + noDate + ' 笔没读到日期，没记（可手动补）');
       toast(say.length ? say.join('，')
-        : (hits ? '这些单之前都记过了' : '照片已存下，没认出购买信息'));
+        : (hits ? '这些单之前都记过了' : '照片已存下，没认出购买信息'), !!errors.length);
     });
   }
 
@@ -6055,8 +6142,8 @@
     enqueue({
       label: '识别 ' + n + ' 张产品照',
       refreshView: 'products',
-      run: function (step) { return scanProductsJob(picked, step); },
-    });
+      kind: 'scan', sourceFiles: picked, completed: [], stamp: Date.now().toString(36),
+    }).catch(function () {});
   }
 
   /* 一张一张识别，不整批送。
@@ -6065,20 +6152,23 @@
      每件产品下面就挂了 24 张，只有一张真跟它有关。
      一张一张来还有个好处：一张订单截图本来就只对应一件商品，
      模型不用在多张之间猜谁是谁。 */
-  function scanProductsJob(files, step) {
-    var stamp = Date.now().toString(36);
+  function scanProductsJob(files, step, job) {
+    var stamp = (job && job.stamp) || Date.now().toString(36);
     var addedNames = [], patchedNames = [];
+    var errors = [];
 
     return files.reduce(function (chain, f, idx) {
       return chain.then(function () {
+        if (job && job.completed.indexOf(idx) >= 0) return null;
         step('第 ' + (idx + 1) + '/' + files.length + ' 张');
         return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
       }).then(function (blob) {
+        if (!blob) return;
         return PrettierAI.identifyProducts([blob]).then(function (found) {
           var list = (found.products || []);
-          if (!list.length) return null;
+          if (!list.length) throw new Error('没有识别出产品，请换一张能看清文字的照片');
 
-          var path = 'products/' + stamp + '-' + idx + '.jpg';
+          return photoPath('products/scan-', blob).then(function (path) {
           var existing = allProducts();
           /* 去重键：先把品牌名从品名里剥掉再比。
              「适乐肤C乳」和「CeraVe C乳」是同一件东西，字面却对不上 ——
@@ -6122,6 +6212,7 @@
                 addedAt: todayISO(),
               };
               newOnes.push(np);
+              merged.push(np);
               addedNames.push(x.short || x.name);
               return;
             }
@@ -6145,12 +6236,16 @@
             patchedNames.push(shortName(merged[at]));
           });
 
-          return saveProducts(merged.concat(newOnes),
+          return saveProducts(merged,
             '产品库：' + (newOnes.length ? '新增 ' + newOnes.length + ' 件' : '补全信息'),
-            [{ path: path, blob: blob }]);
+            [{ path: path, blob: blob }]).then(function () {
+              if (job) { job.completed.push(idx); return persistQueue(); }
+            });
+          });
         });
-      });
+      }).catch(function (err) { errors.push('第 ' + (idx + 1) + ' 张：' + (err.message || err)); });
     }, Promise.resolve()).then(function () {
+      if (errors.length) throw new Error(errors.length + ' 张未完成。' + errors[0]);
       var msg = [];
       if (addedNames.length) msg.push('新增 ' + addedNames.length + ' 件');
       if (patchedNames.length) msg.push('补全 ' + patchedNames.length + ' 处');
@@ -6384,7 +6479,7 @@
     if (window.ResizeObserver) {
       new ResizeObserver(syncAppbarHeight).observe($('.appbar'));
     }
-    loadData().then(function () { return restoreDraft(); }).then(function () {
+    loadData().then(function () { return restoreDraft(); }).then(restoreQueue).then(function () {
       // 回到被打断前那一页；草稿还在就直接进「记一条」
       var back = get(LS.view, 'timeline');
       var hasDraft = state.draft && ((state.draft.photos || []).length ||

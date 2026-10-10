@@ -35,7 +35,7 @@
   var LS_KEY_GEMINI = 'prettier.ai.key.gemini';
   var LS_GEMINI_MODEL = 'prettier.ai.gemini.model';
 
-  function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+  function lsGet(k) { try { return (localStorage.getItem(k) || '').trim(); } catch (e) { return ''; } }
   function lsSet(k, v) { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} }
 
   function provider() { return lsGet(LS_PROVIDER) || 'qwen'; }
@@ -53,12 +53,24 @@
       : QWEN_MODEL;
   }
 
+  function visionRequest(url, opts, consume) {
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 90000);
+    opts.signal = controller.signal;
+    return fetch(url, opts).then(consume).catch(function (err) {
+      if (err.name === 'AbortError') throw new Error('识别超时，请检查网络后重试');
+      if (err instanceof TypeError) throw new Error('连不上识别服务，请检查网络或 API Key 所属地区');
+      throw err;
+    }).finally(function () { clearTimeout(timer); });
+  }
+
   /* 统一的「发一组图 + 一段提示词，拿回文本」——两个厂商的差异只在这里 */
   function callVision(blobs, prompt) {
     var p = provider();
     var key = getKey(p);
     if (!key) throw new Error(p === 'gemini' ? '还没填 Gemini API Key' : '还没填百炼 API Key');
 
+    if (!blobs || !blobs.length) throw new Error('没有照片');
     return Promise.all(blobs.slice(0, 4).map(blobToB64)).then(function (b64s) {
       return p === 'gemini' ? callGemini(key, b64s, prompt) : callQwen(key, b64s, prompt);
     });
@@ -66,15 +78,15 @@
 
   function callQwen(key, b64s, prompt) {
     var content = b64s.map(function (b) {
-      return { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + b } };
+      return { type: 'image_url', image_url: { url: 'data:' + b.mime + ';base64,' + b.data } };
     });
     content.push({ type: 'text', text: prompt });
 
-    return fetch(QWEN_ENDPOINT, {
+    return visionRequest(QWEN_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
       body: JSON.stringify({ model: QWEN_MODEL, messages: [{ role: 'user', content: content }] }),
-    }).then(function (res) {
+    }, function (res) {
       if (!res.ok) {
         return res.text().then(function (t) {
           if (res.status === 401) throw new Error('百炼 API Key 不对');
@@ -97,7 +109,7 @@
       : GEMINI_MODELS.slice();
 
     var parts = b64s.map(function (b) {
-      return { inline_data: { mime_type: 'image/jpeg', data: b } };
+      return { inline_data: { mime_type: b.mime, data: b.data } };
     });
     parts.push({ text: prompt });
 
@@ -108,14 +120,14 @@
         if (done) return done;
         var url = 'https://generativelanguage.googleapis.com/v1beta/models/' +
                   model + ':generateContent?key=' + encodeURIComponent(key);
-        return fetch(url, {
+        return visionRequest(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             contents: [{ parts: parts }],
             generationConfig: { responseMimeType: 'application/json' },
           }),
-        }).then(function (res) {
+        }, function (res) {
           if (res.status === 404) { lastErr = new Error('模型 ' + model + ' 不存在'); return null; }
           if (res.status === 503 || res.status === 500) {
             // Google 那边过载，不是你的问题。换下一个模型再试。
@@ -157,7 +169,11 @@
   function blobToB64(blob) {
     return new Promise(function (resolve, reject) {
       var r = new FileReader();
-      r.onload = function () { resolve(String(r.result).split(',')[1]); };
+      if (!/^image\/(jpeg|png|webp)$/.test(blob.type)) {
+        reject(new Error('这张照片的格式不能识别，请先转换为 JPEG 或 PNG'));
+        return;
+      }
+      r.onload = function () { resolve({ mime: blob.type, data: String(r.result).split(',')[1] }); };
       r.onerror = function () { reject(r.error); };
       r.readAsDataURL(blob);
     });
@@ -226,7 +242,10 @@
     t = t.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     var a = t.indexOf('{'), b = t.lastIndexOf('}');
     if (a >= 0 && b > a) t = t.slice(a, b + 1);
-    return JSON.parse(t);
+    var out;
+    try { out = JSON.parse(t); } catch (err) { throw new Error('识别服务返回的格式不完整，请重试'); }
+    if (!out || typeof out !== 'object' || Array.isArray(out)) throw new Error('识别服务返回的格式不正确，请重试');
+    return out;
   }
 
   /* blobs: [Blob]；ctx: {face, light, slotLabel, dimensions, makeupDimensions, background, mirrored} */
@@ -313,7 +332,7 @@
       .then(function () { return callVision(blobs, prompt); })
       .then(function (text) {
         var out = parseJSON(text || '{"products":[]}');
-        out.products = (out.products || []).filter(function (p) {
+        out.products = (Array.isArray(out.products) ? out.products : []).filter(function (p) {
           return p && p.name && String(p.name).trim();
         }).map(function (p) {
           var n = Number(p.price);
