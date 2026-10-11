@@ -343,22 +343,22 @@
   /* ================= 照片处理 ================= */
 
   function processImage(file) {
-    // 归一化的两件事都在 store.js 里：压平 iPhone 的 HDR（否则 Safari
-    // 按扩展动态范围渲染，缩略图过曝且每张亮度都不同），再做温和的亮度归一。
-    // 对皮肤档案这是刚需 —— 明暗不一的照片没法纵向比色斑深浅。
-    return PrettierPhoto.normalize(file).then(function (r) {
-      return {
-        blob: r.blob,
-        width: r.width,
-        height: r.height,
-        gain: r.gain,
-        // iPhone 从相册选的图，lastModified 通常就是拍摄时间，
-        // 拿它给日期字段做默认值，省得又把日期记错
+    // 保存浏览器收到的原文件；不重画、不缩小、不调整亮度。
+    return window.PrettierPhotos.original(file).then(function (saved) {
+      return Object.assign({}, saved, {
         takenAt: file.lastModified ? new Date(file.lastModified).toISOString() : null,
-        filename: (file.name || 'photo').replace(/\.[^.]+$/, '') + '.jpg',
-        preview: URL.createObjectURL(r.blob),
-      };
+        filename: file.name || 'photo', preview: URL.createObjectURL(file),
+      });
     });
+  }
+
+  function analysisPhotos(photos) {
+    var blobs = [];
+    return photos.reduce(function (chain, p) {
+      return chain.then(function () {
+        return (p.original || (p.path && window.PrettierPhotos.isOriginal(p.path))) ? PrettierPhoto.normalize(p.blob).then(function (r) { return r.blob; }) : p.blob;
+      }).then(function (blob) { blobs.push(blob); });
+    }, Promise.resolve()).then(function () { return blobs; });
   }
 
   /* ================= 渲染片段 ================= */
@@ -1097,6 +1097,7 @@
       return chain.then(function (acc) {
         return photoURL(p).then(function (u) { return fetch(u); })
           .then(function (r) { return r.blob(); })
+          .then(function (b) { return window.PrettierPhotos.isOriginal(p) ? PrettierPhoto.normalize(b).then(function (r) { return r.blob; }) : b; })
           .then(function (b) { return acc.concat([b]); });
       });
     }, Promise.resolve([])).then(function (blobs) {
@@ -2562,7 +2563,7 @@
 
   /* 病历、导诊单、药盒、缴费单。
      和产品那边的「拍照识别」不是一回事：单据要的是【原样存档】——
-     AI 认错了反而污染记录，而且没填 API Key 也该能存。所以这里只压缩和上传。 */
+     AI 认错了反而污染记录，而且没填 API Key 也该能存。所以这里只保存原文件。 */
   function pickProcShots(key) {
     var inp = $('#docInput');
     if (!inp) return;
@@ -2580,16 +2581,12 @@
     var n = files.length;
     toast('照片处理中…（' + n + ' 张）');
 
-    Promise.all(Array.prototype.slice.call(files).map(function (f) {
-      return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
-    })).then(function (blobs) {
+    Promise.all(Array.prototype.slice.call(files).map(function (f) { return window.PrettierPhotos.original(f); })).then(function (shots) {
       /* 早先手写进去的记录没有 id，身份是「日期+名字」——
          之后改个名字，照片就跟丢了。第一次贴照片顺手补一个 id 钉住它。 */
       var stamp = Date.now().toString(36);
       var pid = p.id || ('pc' + stamp);
-      var shots = blobs.map(function (b, i) {
-        return { path: 'procedures/' + pid + '-' + stamp + '-' + i + '.jpg', blob: b };
-      });
+
       // 图先进仓库；记录里存的是路径，反过来会指向还不存在的文件
       return GitStore.commit(shots, '医美记录：' + (p.name || '') + ' 的照片')
         .then(function () {
@@ -2791,7 +2788,7 @@
       });
       // preview 是 objectURL，重启后就失效了，只留 blob
       copy.photos = (d.photos || []).map(function (p) {
-        return { blob: p.blob, width: p.width, height: p.height, gain: p.gain,
+        return { blob: p.blob, path: p.path, original: p.original, localOnly: p.localOnly, width: p.width, height: p.height, gain: p.gain,
                  takenAt: p.takenAt, filename: p.filename };
       });
       GitStore.cachePut(DRAFT_KEY, copy);
@@ -3146,7 +3143,7 @@
     out.innerHTML = '';
 
     var S = state.data || {};
-    PrettierAI.analyze(d.photos.map(function (p) { return p.blob; }), {
+    analysisPhotos(d.photos).then(function (blobs) { return PrettierAI.analyze(blobs, {
       face: d.face,
       light: d.light,
       slotLabel: SLOT[d.slot],
@@ -3156,7 +3153,7 @@
       background: (S.mainlines || []).map(function (m) {
         return '· ' + m.key + (m.area ? '（' + m.area + '）' : '');
       }).join('\n'),
-    }).then(function (r) {
+    }); }).then(function (r) {
       d.ai = r;
       // AI 给的分直接填进去，你可以再改
       Object.assign(d.scores, r.scores || {});
@@ -3202,7 +3199,7 @@
       return '<div class="slot new" data-drag="n' + i + '" data-peekn="' + i + '">' +
         '<img src="' + p.preview + '" alt="" draggable="false">' +
         '<button class="del" data-i="' + i + '" aria-label="删除">×</button>' +
-        '<span class="badge">新</span></div>';
+        '<span class="badge">' + (p.original ? '原图' : '新') + '</span></div>';
     }));
 
     host.innerHTML = cells.join('') +
@@ -3354,7 +3351,7 @@
     d.processing = (d.processing || 0) + picked.length;
     picked.reduce(function (chain, f, i) {
       return chain.then(function () {
-        toast('处理照片 ' + (i + 1) + '/' + picked.length);
+        toast('保存原照片 ' + (i + 1) + '/' + picked.length);
         return processImage(f).then(function (p) {
           d.photos.push(p);
           if (state.draft === d) { drawPicker(); saveDraft2(); }
@@ -3646,8 +3643,8 @@
     var paths = (d.keepPhotos || []).slice();   // 编辑时保留的老照片
 
     d.photos.forEach(function (p, i) {
-      var path = 'photos/' + id + '/' + Date.now().toString(36) + i + '.jpg';
-      files.push({ path: path, blob: p.blob });
+      var path = p.path || ('photos/' + id + '/' + Date.now().toString(36) + i + '.jpg');
+      files.push({ path: path, blob: p.blob, localOnly: p.localOnly });
       paths.push(path);
     });
 
@@ -3885,10 +3882,10 @@
     var mode = window.PrettierPhotos.mode();
     return '<div class="section-title">本机照片</div><div class="card">' +
       '<div class="tiny" id="photoDiskStats">正在读取本机照片…</div>' +
-      '<div class="tiny" style="margin:10px 0">已保存的照片直接读本机；历史照片会在后台逐张保存，首次下载需要联网。</div>' +
+      '<div class="tiny" style="margin:10px 0">新照片保留原文件，仅存本机，记录同步照片代号；历史照片会在后台下载。下面的备份选项仅适用于旧处理图。</div>' +
       '<div class="segmented" id="photoMode">' +
-      '<button data-mode="backup"' + (mode === 'backup' ? ' class="on"' : '') + '>本机 + 云端备份</button>' +
-      '<button data-mode="local"' + (mode === 'local' ? ' class="on"' : '') + '>新照片仅本机</button></div>' +
+      '<button data-mode="backup"' + (mode === 'backup' ? ' class="on"' : '') + '>旧处理图：云端备份</button>' +
+      '<button data-mode="local"' + (mode === 'local' ? ' class="on"' : '') + '>旧处理图：仅本机</button></div>' +
       '<button class="btn" id="photoDownload" type="button" style="margin-top:14px">' +
       (photoTransfer.running ? '暂停下载' : '把历史照片保存到本机') + '</button>' +
       '<div class="tiny" id="photoTransferOut" style="margin-top:10px">' + esc(photoTransfer.text) + '</div>' +
@@ -3902,7 +3899,7 @@
   function showPhotoStats() {
     return window.PrettierPhotos.stats().then(function (s) {
       var out = $('#photoDiskStats');
-      if (out) out.textContent = '本机已保存 ' + s.count + ' 张 · ' + (s.bytes / 1048576).toFixed(1) + ' MB';
+      if (out) out.textContent = '本机已保存 ' + s.count + ' 张 · ' + (s.bytes / 1048576).toFixed(1) + ' MB · 原图 ' + s.originals + ' 张';
     }).catch(function (err) { var out = $('#photoDiskStats'); if (out) out.textContent = err.message || String(err); });
   }
 
@@ -3916,7 +3913,7 @@
     var out = [], seen = {};
     function visit(value) {
       if (typeof value === 'string') {
-        if (/\.(?:jpe?g|png|webp|heic|heif)$/i.test(value) && value.indexOf('/') >= 0 && !/^https?:/.test(value) && !seen[value]) {
+        if (/\.(?:jpe?g|png|webp|heic|heif|avif|gif)$/i.test(value) && value.indexOf('/') >= 0 && !/^https?:/.test(value) && !seen[value]) {
           seen[value] = true; out.push(value);
         }
       } else if (Array.isArray(value)) value.forEach(visit);
@@ -3969,7 +3966,7 @@
       try { window.PrettierPhotos.setMode(b.dataset.mode); }
       catch (err) { toast('照片设置没有保存：' + (err.message || err), true); return; }
       $$('#photoMode button', host).forEach(function (x) { x.classList.toggle('on', x === b); });
-      toast(b.dataset.mode === 'local' ? '新照片只保存在本机' : '新照片保存在本机，并备份到云端');
+      toast('旧处理图备份方式已保存，新原图仍仅保存在本机');
     });
     $('#photoDownload', host).addEventListener('click', downloadPhotosToDevice);
     $('#photoExport', host).addEventListener('click', function () {
@@ -4263,7 +4260,7 @@
     on('#cmpZoomOpen', 'click', function () {
       if (!pair.every(function (e) { return (e.photos || []).length; })) return toast('两条记录都需要有照片', true);
       window.PrettierCompare.open(pair.map(function (e, side) {
-        return { label: fmtDate(e.date) + ' ' + fmtTime(e.at), url: photoURL(e.photos[cmpPick[side]]) };
+        return { label: fmtDate(e.date) + ' ' + fmtTime(e.at) + (window.PrettierPhotos.isOriginal(e.photos[cmpPick[side]]) ? ' · 原图' : ' · 历史图'), url: photoURL(e.photos[cmpPick[side]]) };
       }));
     });
     host.onclick = function (ev) {
@@ -5803,9 +5800,10 @@
         newBuys = [];
         files.reduce(function (prev, f, i) {
           return prev.then(function () {
-            return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+            return window.PrettierPhotos.original(f).then(function (saved) {
+              blobs.push(saved); return PrettierPhoto.normalize(f);
+            }).then(function (r) { return r.blob; });
           }).then(function (blob) {
-            blobs.push(blob);
             if (files.length > 1) msg.textContent = '识别中… ' + (i + 1) + '/' + files.length;
             return PrettierAI.identifyProducts([blob]).then(function (found) {
               var x = (found.products || [])[0];
@@ -5867,10 +5865,7 @@
       // 刚才拍的照片一起存进去
       var files = null;
       if (newShots && newShots.length) {
-        var stamp = Date.now().toString(36);
-        files = newShots.map(function (b, i) {
-          return { path: 'products/' + p.id + '-' + stamp + '-' + i + '.jpg', blob: b };
-        });
+        files = newShots.slice();
         p.photos = files.map(function (f) { return f.path; });
         newShots = null;
       }
@@ -6101,10 +6096,16 @@
     }).catch(function () {});
   }
 
-  // 先保存处理好的照片再识别。失败重试复用它，避免再次解码和保留大原图。
+  // 原文件独立保留；处理图只用于识别，失败重试复用处理图。
   function normalizedJobPhoto(job, index, file) {
     if (job && (job.normalizedSources || []).indexOf(index) >= 0) return Promise.resolve(file);
-    return PrettierPhoto.normalize(file).then(function (r) {
+    var original = window.PrettierPhotos ? window.PrettierPhotos.original(file) : Promise.resolve(null);
+    return original.then(function (saved) {
+      if (saved && job && job.sourceFiles) {
+        job.originalPaths = (job.originalPaths || []).slice(); job.originalPaths[index] = saved.path;
+      }
+      return PrettierPhoto.normalize(file);
+    }).then(function (r) {
       if (!job || !job.sourceFiles) return r.blob;
       var original = job.sourceFiles[index], previous = job.normalizedSources;
       job.sourceFiles[index] = r.blob;
@@ -6139,7 +6140,7 @@
       }).then(function (blob) {
         if (!blob) return null;
         // 文件名是内容指纹：同一张再传一次，路径一样，不会挂成两张
-        return photoPath('products/' + pid + '-', blob).then(function (path) {
+        return (job && job.originalPaths && job.originalPaths[i] ? Promise.resolve(job.originalPaths[i]) : photoPath('products/' + pid + '-', blob)).then(function (path) {
           return PrettierAI.identifyProducts([blob]).then(function (found) {
             var all = (found && found.products) || [];
             var x = all[0];
@@ -6271,13 +6272,7 @@
     var n = files.length;
     toast('照片处理中…（' + n + ' 张）');
 
-    Promise.all(Array.prototype.slice.call(files).map(function (f) {
-      return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
-    })).then(function (blobs) {
-      var stamp = Date.now().toString(36);
-      var shots = blobs.map(function (b, i) {
-        return { path: 'products/' + pid + '-inci-' + stamp + '-' + i + '.jpg', blob: b };
-      });
+    Promise.all(Array.prototype.slice.call(files).map(function (f) { return window.PrettierPhotos.original(f); })).then(function (shots) {
       var next = allProducts().map(function (x) {
         if (x.id !== pid) return x;
         return Object.assign({}, x, {
@@ -6368,7 +6363,7 @@
           var list = (found.products || []);
           if (!list.length) throw new Error('没有识别出产品，请换一张能看清文字的照片');
 
-          return photoPath('products/scan-', blob).then(function (path) {
+          return (job && job.originalPaths && job.originalPaths[idx] ? Promise.resolve(job.originalPaths[idx]) : photoPath('products/scan-', blob)).then(function (path) {
           var existing = allProducts();
           /* 去重键：先把品牌名从品名里剥掉再比。
              「适乐肤C乳」和「CeraVe C乳」是同一件东西，字面却对不上 ——

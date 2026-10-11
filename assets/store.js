@@ -533,6 +533,9 @@
      Git 里删文件 = 提交一棵不含它的树。用 sha:null 标记删除。 */
 
   function commitDelete(paths, message, tries) {
+    // 新原图没有云端文件；这里只删除旧云端照片，原文件可被其他记录共用。
+    if (window.PrettierPhotos && window.PrettierPhotos.isOriginal) paths = paths.filter(function (p) { return !window.PrettierPhotos.isOriginal(p); });
+    if (!paths.length) return Promise.resolve();
     if (drainTask) return drainTask.catch(function () {}).then(function () { return commitDelete(paths, message, tries); });
     var remote = isLocal() ? Promise.resolve(paths) : head().then(tree).then(function (t) {
       var real = {};
