@@ -45,6 +45,15 @@
     return Promise.all(paths.map(function (p) { return window.GitStore.cacheDelete(base + p); }));
   }
   function records(metadataOnly) { return window.GitStore.cacheList(prefix(), metadataOnly).then(function (rows) { return rows.map(function (r) { return r.value; }).filter(function (r) { return r && r.blob; }); }); }
+  function missing(paths, tree) {
+    return records(true).then(function (rows) {
+      var saved = {}; rows.forEach(function (r) { saved[r.path] = r; });
+      return paths.filter(function (path) {
+        var r = saved[path], sha = (tree || {})[path];
+        return !r || (sha && r.sha && sha.indexOf('local:') !== 0 && r.sha !== sha);
+      });
+    });
+  }
   function stats() { return records(true).then(function (rows) { return { count: rows.length, bytes: rows.reduce(function (n, r) { return n + (r.size || r.blob.size || 0); }, 0) }; }); }
   function keepStorage() {
     if (navigator.storage && navigator.storage.persist) return navigator.storage.persist().catch(function () { return false; });
@@ -146,5 +155,5 @@
       }, Promise.resolve()).then(function () { return manifest.photos.length; });
     });
   }
-  window.PrettierPhotos = { configure: configure, mode: mode, setMode: setMode, put: put, get: get, prepare: prepare, remove: remove, stats: stats, keepStorage: keepStorage, exportBackup: exportBackup, importBackup: importBackup };
+  window.PrettierPhotos = { configure: configure, mode: mode, setMode: setMode, put: put, get: get, prepare: prepare, remove: remove, missing: missing, stats: stats, keepStorage: keepStorage, exportBackup: exportBackup, importBackup: importBackup };
 })();

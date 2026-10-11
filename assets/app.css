@@ -1271,7 +1271,10 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
   border: 1px solid var(--accent); background: none; color: var(--accent-ink);
   border-radius: 999px; padding: 5px 13px; font-size: 13px;
 }
-.cmp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.cmp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.cmp-col { min-width: 0; overflow-wrap: anywhere; }
+.cmp-big { min-width: 0; }
+.cmp-big img { display: block; max-width: 100%; }
 .cmp-when {
   font-family: var(--sans); font-size: 13px; color: var(--accent-ink); margin-bottom: 6px;
 }
@@ -1457,6 +1460,7 @@ body.no-scroll { position: fixed; left: 0; right: 0; overflow: hidden; width: 10
 /* 对比页：上面挑图，下面大图并排 */
 .cmp-strip {
   display: flex; gap: 4px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 6px;
+  max-width: 100%; min-width: 0; overscroll-behavior-x: contain;
 }
 .cmp-th {
   flex: none; width: 42px; height: 56px; padding: 0; line-height: 0;

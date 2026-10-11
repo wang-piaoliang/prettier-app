@@ -229,7 +229,7 @@
   }
 
   function seedFromCache() {
-    try { return JSON.parse(get(LS.cache, '')) || null; } catch (e) { return null; }
+    try { var c = JSON.parse(get(LS.cache, '')) || null; return c && c.owner && (c.owner !== state.owner || c.repo !== state.repo) ? null : c; } catch (e) { return null; }
   }
 
   /* 转本地：把上次同步下来的内容当底子，接着往下记。
@@ -254,56 +254,42 @@
     });
   }
 
+  var dataLoadTask = null;
   function loadData() {
-    syncDot('busy', '同步中');
+    if (dataLoadTask) return dataLoadTask;
+    var task = loadDataOnce();
+    dataLoadTask = task;
+    task.then(function () { dataLoadTask = null; }, function () { dataLoadTask = null; });
+    return task;
+  }
+
+  function loadDataOnce() {
+    syncDot('busy', '后台同步中，本机记录可继续查看');
     configureStore();
-
     if (!state.token) return fallLocal('本地模式 · 还没填令牌');
-
-    // 一次拿整棵树，顺带得到每张照片的 blob sha，省掉逐个文件查询
-    return GitStore.head()
-      .then(function (sha) { return GitStore.tree(sha); })
-      .then(function (t) {
-        state.tree = {};
-        (t.tree || []).forEach(function (n) {
-          if (n.type === 'blob') state.tree[n.path] = n.sha;
+    var cached = seedFromCache();
+    return GitStore.head().then(function (sha) {
+      // 云端没变化时只检查提交号，不重新拉树和两份记录。
+      if (sha !== 'local' && state.data && cached && cached.head === sha) return state.data;
+      return Promise.all([GitStore.tree(sha), GitStore.readJSON('settings.json', sha), GitStore.readJSON('entries.json', sha)])
+        .then(function (r) {
+          var tree = {}, settings = r[1] || {};
+          (r[0].tree || []).forEach(function (n) { if (n.type === 'blob') tree[n.path] = n.sha; });
+          settings.entries = r[2] || [];
+          state.tree = tree; state.data = settings;
+          applyQueuedLists();
+          set(LS.cache, JSON.stringify({ owner: state.owner, repo: state.repo, head: sha, data: settings, tree: tree }));
+          return settings;
         });
-        return Promise.all([
-          GitStore.readJSON('settings.json'),
-          GitStore.readJSON('entries.json'),
-        ]);
-      })
-      .then(function (r) {
-        var settings = r[0] || {};
-        settings.entries = r[1] || [];
-        state.data = settings;
-        applyQueuedLists();
-        set(LS.cache, JSON.stringify({ data: settings, tree: state.tree }));
-        syncDot('', '已同步');
-        renderPending();
-        autoDrain();          // 本地还欠着的，连上就自己补传
-        return settings;
-      })
-      .catch(function (err) {
-        // 令牌不灵了：转本地接着用，别把人挡在门外
-        if (err.status === 401 || err.status === 403) {
-          return fallLocal('本地模式 · 令牌暂时不可用');
-        }
-        // 断网就退回上次拉到的内容，但要如实说明看到的是旧数据
-        var cached = get(LS.cache, '');
-        if (cached && !state.data) {
-          try {
-            var c = JSON.parse(cached);
-            state.data = c.data;
-            state.tree = c.tree || {};
-            syncDot('off', '离线，显示上次同步的内容');
-            toast('离线，显示上次同步的内容');
-            return state.data;
-          } catch (e) {}
-        }
-        syncDot('err', String(err.message || err));
-        throw err;
-      });
+    }).then(function (settings) {
+      syncDot('', '已同步'); renderPending(); autoDrain();
+      return settings;
+    }).catch(function (err) {
+      if (err.status === 401 || err.status === 403) return fallLocal('本地模式 · 令牌暂时不可用');
+      if (cached && cached.data && !state.data) { state.data = cached.data; state.tree = cached.tree || {}; }
+      if (state.data) { syncDot('off', '显示本机记录，云端同步未完成'); return state.data; }
+      syncDot('err', String(err.message || err)); throw err;
+    });
   }
 
   /* 照片：先看本机缓存，没有再从仓库取。
@@ -3504,7 +3490,7 @@
           renderQueue();
           toast('保存失败：' + why + '（本地也没存下：' + (e2.message || e2) + '）', true);
         });
-    }).then(function () { pump(); });
+    }).then(function () { pump(); if (!running) schedulePhotoDownload(); });
   }
 
   function runJob(job) {
@@ -3802,6 +3788,7 @@
       pendingRefresh = true;      // 等编辑结束再补
       return;
     }
+    if (compareActive && (!view || view === 'trend')) return renderCompare();
     go(view || state.view);
   }
 
@@ -3833,6 +3820,8 @@
     var sameView = state.view === view;
     var keepY = window.scrollY;
 
+    compareActive = false;
+    var trendHost = $('#view-trend'); if (trendHost) trendHost.onclick = null;
     state.view = view;
     // 记住停在哪一页：iOS 选照片时会把 PWA 回收，回来是重新启动，
     // 固定落到时间线的话，人以为「返回」结果被扔到别处
@@ -3883,12 +3872,20 @@
   /* ================= 设置 ================= */
 
   var photoTransfer = { running: false, cancelled: false, text: '' };
+  var photoDownloadTimer = null, photoAutoPaused = false;
+  function schedulePhotoDownload() {
+    clearTimeout(photoDownloadTimer);
+    photoDownloadTimer = setTimeout(function () {
+      if (!photoAutoPaused && !photoTransfer.running && !running && document.visibilityState !== 'hidden') downloadPhotosToDevice(true);
+    }, 1200);
+  }
+
 
   function photoSettingsHTML() {
     var mode = window.PrettierPhotos.mode();
     return '<div class="section-title">本机照片</div><div class="card">' +
       '<div class="tiny" id="photoDiskStats">正在读取本机照片…</div>' +
-      '<div class="tiny" style="margin:10px 0">打开照片直接读本机；新照片保存到本机后，再按下面的设置备份。</div>' +
+      '<div class="tiny" style="margin:10px 0">已保存的照片直接读本机；历史照片会在后台逐张保存，首次下载需要联网。</div>' +
       '<div class="segmented" id="photoMode">' +
       '<button data-mode="backup"' + (mode === 'backup' ? ' class="on"' : '') + '>本机 + 云端备份</button>' +
       '<button data-mode="local"' + (mode === 'local' ? ' class="on"' : '') + '>新照片仅本机</button></div>' +
@@ -3931,26 +3928,33 @@
     return out;
   }
 
-  function downloadPhotosToDevice() {
-    if (photoTransfer.running) { photoTransfer.cancelled = true; photoTransferMessage('正在暂停，已保存的照片会保留'); return; }
-    var paths = photoPaths(), done = 0;
-    if (!paths.length) return toast('还没有照片记录', true);
+  function downloadPhotosToDevice(automatic) {
+    automatic = automatic === true;
+    if (photoTransfer.running) {
+      if (!automatic) { photoAutoPaused = true; photoTransfer.cancelled = true; photoTransferMessage('正在暂停，已保存的照片会保留'); }
+      return Promise.resolve();
+    }
+    if (!automatic) photoAutoPaused = false;
+    var paths = photoPaths(), done = 0, failures = 0, lastFailure = '';
+    if (!paths.length) return Promise.resolve();
     photoTransfer.running = true; photoTransfer.cancelled = false;
     var b = $('#photoDownload'); if (b) b.textContent = '暂停下载';
-    photoTransferMessage('准备保存 ' + paths.length + ' 张历史照片');
     window.PrettierPhotos.keepStorage();
-    paths.reduce(function (chain, path) {
-      return chain.then(function () {
-        if (photoTransfer.cancelled) return;
-        return window.PrettierPhotos.get(path, state.tree[path] || '').then(function () {
-          done++; photoTransferMessage('已保存 ' + done + '/' + paths.length + ' 张到本机');
+    return window.PrettierPhotos.missing(paths, state.tree).then(function (missing) {
+      photoTransferMessage(missing.length ? '后台保存 ' + missing.length + ' 张历史照片，已在本机的照片可直接打开' : '历史照片已全部保存在本机');
+      return missing.reduce(function (chain, path) {
+        return chain.then(function () {
+          if (photoTransfer.cancelled || document.visibilityState === 'hidden') { photoTransfer.cancelled = true; return; }
+          return window.PrettierPhotos.get(path, state.tree[path] || '').then(function () {
+            done++; photoTransferMessage('后台已保存 ' + done + '/' + missing.length + ' 张到本机');
+          }).catch(function (err) { failures++; lastFailure = err.message || String(err); if (/QuotaExceededError|SecurityError|NotSupportedError/.test(err.name || '')) photoTransfer.cancelled = true; });
         });
-      });
-    }, Promise.resolve()).then(function () {
-      photoTransferMessage(photoTransfer.cancelled ? '已暂停；再次下载会跳过已保存的照片' : '历史照片已全部保存在本机，可以直接打开');
+      }, Promise.resolve());
+    }).then(function () {
+      photoTransferMessage(photoTransfer.cancelled ? '已暂停，已保存的照片会保留' + (lastFailure ? '：' + lastFailure : '') : failures ? '已保存 ' + done + ' 张，' + failures + ' 张暂未下载：' + lastFailure : '历史照片已全部保存在本机，可以直接打开');
     }).catch(function (err) {
-      photoTransferMessage('下载已暂停，已保存的照片保留。' + (err.message || err));
-      toast('历史照片下载未完成：' + (err.message || err), true);
+      photoTransferMessage('保存到本机未完成：' + (err.message || err));
+      if (!automatic) toast('历史照片下载未完成：' + (err.message || err), true);
     }).finally(function () {
       photoTransfer.running = false;
       var button = $('#photoDownload'); if (button) button.textContent = '把历史照片保存到本机';
@@ -4157,6 +4161,7 @@
      所以对比要同时给出【照片并排】和【产品差在哪】。 */
   var cmpSel = [];
   var cmpPick = [0, 0];
+  var compareActive = false;
   var selectMode = false;
 
   function toggleCompare(id) {
@@ -4247,17 +4252,19 @@
       '</div>' +
       '<button class="btn ghost" id="cmpBack" type="button" style="margin-top:18px">返回时间线</button>';
 
+    compareActive = true;
     state.view = 'trend';
+    syncTopBtn();
     $$('.view').forEach(function (v) { v.classList.remove('active'); });
     host.classList.add('active');
     hydratePhotos(host);
     on('#cmpBack', 'click', function () { cmpSel = []; cmpPick = [0, 0]; go('timeline'); });
-    host.addEventListener('click', function (ev) {
+    host.onclick = function (ev) {
       var th = ev.target.closest('[data-cmp-pick]');
       if (!th) return;
       cmpPick[Number(th.dataset.cmpPick)] = Number(th.dataset.i);
       renderCompare();
-    });
+    };
   }
 
   /* ================= 产品库 ================= */
@@ -5305,7 +5312,7 @@
        手机上改个评分，就能把别处刚做的合并复原成合并前的样子。
        所以按 id 做差异：本地改过的用本地的，本地没碰过的保留云端的，
        本地明确删掉的才删。 */
-    var before = allProducts();
+    var before = allProducts(), mergedProducts = list;
     var kept = {};
     list.forEach(function (p) { kept[p.id] = p; });
     var removed = before.filter(function (b) { return !kept[b.id]; })
@@ -5342,13 +5349,15 @@
             return merged;
           });
         list.forEach(function (p) { if (!seen[p.id]) out.push(p); });
+        mergedProducts = out;
         base.products = out;
         return base;
       }, message);
     }).then(function () {
-      if (state.data) state.data.products = list;
-      return loadData().then(function () { if (state.view === 'products') refresh('products'); })
-        .catch(function (err) { toast('已保存，但刷新失败：' + (err.message || err), true); });
+      if (state.data) state.data.products = mergedProducts;
+      set(LS.cache, JSON.stringify({ owner: state.owner, repo: state.repo, data: state.data, tree: state.tree }));
+      if (state.view === 'products') refresh('products');
+      loadData().then(function () { if (state.view === 'products') refresh('products'); }).catch(function () {});
     });
   }
 
@@ -5514,11 +5523,6 @@
     var strip = function (list) {
       return (list || []).filter(function (t) { return String(t).split('#')[0] !== pid; });
     };
-    ((state.data && state.data.entries) || []).forEach(function (e) {
-      if (!e.products) return;
-      e.products.skincare = strip(e.products.skincare);
-      e.products.makeup = strip(e.products.makeup);
-    });
     return GitStore.updateJSON('entries.json', function (remote) {
       return (remote || []).map(function (e) {
         if (!e.products) return e;
@@ -5526,17 +5530,37 @@
         y.products = { skincare: strip(e.products.skincare), makeup: strip(e.products.makeup) };
         return y;
       });
-    }, '清掉已删除产品的引用').catch(function () {});
+    }, '清掉已删除产品的引用').then(function () {
+      ((state.data && state.data.entries) || []).forEach(function (e) {
+        if (e.products) e.products = { skincare: strip(e.products.skincare), makeup: strip(e.products.makeup) };
+      });
+      set(LS.cache, JSON.stringify({ owner: state.owner, repo: state.repo, data: state.data, tree: state.tree }));
+    });
   }
 
+  var deletingProducts = {};
   function removeProduct(id) {
+    if (deletingProducts[id]) return;
     var p = allProducts().filter(function (x) { return x.id === id; })[0];
     if (!p || !confirm('从产品库删除「' + shortName(p) + '」？')) return;
-    // 记录里引用的是 id，产品没了不清引用，时间线上就会露出一串 id
-    clearProductRefs(id);
-    saveProducts(allProducts().filter(function (x) { return x.id !== id; }), '产品库：删除 ' + p.name)
-      .then(function () { toast('已删除'); })
-      .catch(function (e) { toast('失败：' + e.message, true); });
+    deletingProducts[id] = true;
+    var buttons = $$('[data-del]').filter(function (b) { return b.dataset.del === id; });
+    buttons.forEach(function (b) { b.disabled = true; b.textContent = '删除中…'; });
+    toast('正在删除「' + shortName(p) + '」');
+    // 顺序提交，避免清理引用与删除产品争抢同一个分支。
+    return saveProducts(allProducts().filter(function (x) { return x.id !== id; }), '产品库：删除 ' + p.name)
+      .then(function () {
+        if (openProdId === id) {
+          openProdId = null;
+          $$('.prod-card').filter(function (c) { return c.dataset.pid === id; }).forEach(function (c) { c.remove(); });
+        }
+        toast('已删除');
+        return clearProductRefs(id).catch(function (e) { toast('产品已删除，历史引用同步未完成：' + (e.message || e), true); });
+      }).catch(function (e) { toast('删除失败：' + (e.message || e), true); })
+      .finally(function () {
+        delete deletingProducts[id];
+        buttons.forEach(function (b) { b.disabled = false; b.textContent = '🗑'; });
+      });
   }
 
   function toggleProduct(id) {
@@ -6175,6 +6199,18 @@
 
   /* 用 textarea 而不是那排单行输入框：成分表是要整段读、整段比的东西，
      换行也得留住 —— 官网复制下来的顺序本身就是信息（含量从高到低）。 */
+  function saveProductInci(pid, text) {
+    var before = allProducts().slice();
+    var list = before.map(function (p) {
+      return p.id === pid ? Object.assign({}, p, { inci: text || undefined, ingredients: undefined }) : p;
+    });
+    return enqueue({ kind: 'list', settingKey: 'products', before: before, list: list,
+      message: '产品库：保存成分表', label: '成分表同步', refreshView: 'products' }).then(function () {
+      if (state.data) state.data.products = GitStore.mergeListDelta(state.data.products, before, list);
+      set(LS.cache, JSON.stringify({ owner: state.owner, repo: state.repo, data: state.data, tree: state.tree }));
+    });
+  }
+
   function openInciEditor(pid, anchor) {
     if (document.getElementById('inci-edit')) return;
     var p = allProducts().filter(function (x) { return x.id === pid; })[0];
@@ -6195,19 +6231,17 @@
 
     box.querySelector('.ie-cancel').addEventListener('click', function () { box.remove(); });
     box.querySelector('.ie-ok').addEventListener('click', function () {
-      var v = box.querySelector('#inci-txt').value.trim();
-      /* 先 blur 再移除：只移除的话 activeElement 还停在 textarea 上，
-         isEditing() 判定为真，刷新被欠下 —— 表现是「点保存没反应」。 */
-      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-      box.remove();
-      saveProducts(allProducts().map(function (x) {
-        // 存的时候把旧字段清掉，免得两个名字各存一份、以后不知道该信谁
-        return x.id === pid
-          ? Object.assign({}, x, { inci: v || undefined, ingredients: undefined })
-          : x;
-      }), '产品库：' + shortName(p) + ' 的成分表')
-        .then(function () { toast('已保存'); })
-        .catch(function (e) { toast('失败：' + (e.message || e), true); });
+      var button = this, input = box.querySelector('#inci-txt'), v = input.value.trim();
+      if (button.disabled) return;
+      button.disabled = true; button.textContent = '保存到本机…'; input.readOnly = true;
+      saveProductInci(pid, v).then(function () {
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        box.remove(); refresh('products');
+        toast('成分表已保存到本机，后台同步');
+      }).catch(function (e) {
+        button.disabled = false; button.textContent = '重试保存'; input.readOnly = false;
+        toast('成分表未保存：' + (e.message || e) + '，文字已保留', true);
+      });
     });
   }
 
@@ -6643,22 +6677,27 @@
       new ResizeObserver(syncAppbarHeight).observe($('.appbar'));
     }
     configureStore();
-    var cached = seedFromCache();
-    var warm = cached && cached.data;
-    if (warm) { state.data = cached.data; state.tree = cached.tree || {}; }
+    var cached = seedFromCache(), warm = cached && cached.data;
+    var back = get(LS.view, 'timeline');
+    if (warm) {
+      state.data = cached.data; state.tree = cached.tree || {};
+      go(back || 'timeline'); // 先显示本机记录与照片，不等大队列、草稿或网络。
+    }
     var first = warm ? Promise.resolve() : loadData();
-    first.then(function () { return restoreDraft(); }).then(restoreQueue).then(function () {
-      // 回到被打断前那一页；草稿还在就直接进「记一条」
-      var back = get(LS.view, 'timeline');
-      var hasDraft = state.draft && ((state.draft.photos || []).length ||
-                                     (state.draft.note || '').trim());
-      go(hasDraft ? 'compose' : (back || 'timeline'));
+    first.then(function () {
+      if (!warm) go(back || 'timeline');
+      return Promise.all([restoreDraft(), restoreQueue()]);
+    }).then(function () {
+      var hasDraft = state.draft && ((state.draft.photos || []).length || (state.draft.note || '').trim());
+      if (hasDraft && state.view === back && !compareActive) go('compose');
+      else if (!isEditing()) refresh(state.view);
       if (window.PrettierPhotos) window.PrettierPhotos.keepStorage();
-      if (warm) loadData().then(function () {
-        if (!isEditing()) refresh(state.view);
-      }).catch(function (err) { toast('正在使用本机记录；云端同步失败：' + (err.message || err), true); });
-    })
-      .catch(function (err) { toast(String(err.message || err), true); });
+      schedulePhotoDownload();
+    }).catch(function (err) { toast(String(err.message || err), true); });
+    if (warm) loadData().then(function () {
+      if (!isEditing()) refresh(state.view);
+      schedulePhotoDownload();
+    }).catch(function (err) { toast('正在使用本机记录；云端同步失败：' + (err.message || err), true); });
   }
 
   function bindGate() {
@@ -6809,7 +6848,9 @@
 
     on('#refreshBtn', 'click', function () {
       if (isEditing() && !confirm('正在编辑的内容会丢失，确定刷新？')) return;
-      loadData().then(function () { go(state.view); toast('已刷新'); })
+      refresh(state.view);
+      if (state.data) toast('已显示本机记录，正在同步');
+      loadData().then(function () { refresh(state.view); schedulePhotoDownload(); toast('已刷新'); })
         .catch(function (err) { toast(String(err.message || err), true); });
     });
 
@@ -6820,6 +6861,7 @@
     bindQueueSwipe();
     if (window.ResizeObserver) new ResizeObserver(syncQueueHeight).observe($('#queue'));
     window.addEventListener('resize', syncQueueHeight);
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') schedulePhotoDownload(); });
     checkForUpdate();
 
     if (state.owner && state.repo) {
