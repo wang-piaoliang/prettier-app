@@ -44,8 +44,8 @@
     var base = prefix();
     return Promise.all(paths.map(function (p) { return window.GitStore.cacheDelete(base + p); }));
   }
-  function records() { return window.GitStore.cacheList(prefix()).then(function (rows) { return rows.map(function (r) { return r.value; }).filter(function (r) { return r && r.blob; }); }); }
-  function stats() { return records().then(function (rows) { return { count: rows.length, bytes: rows.reduce(function (n, r) { return n + r.blob.size; }, 0) }; }); }
+  function records(metadataOnly) { return window.GitStore.cacheList(prefix(), metadataOnly).then(function (rows) { return rows.map(function (r) { return r.value; }).filter(function (r) { return r && r.blob; }); }); }
+  function stats() { return records(true).then(function (rows) { return { count: rows.length, bytes: rows.reduce(function (n, r) { return n + (r.size || r.blob.size || 0); }, 0) }; }); }
   function keepStorage() {
     if (navigator.storage && navigator.storage.persist) return navigator.storage.persist().catch(function () { return false; });
     return Promise.resolve(false);
@@ -68,18 +68,19 @@
   function header(size) { var bytes = new Uint8Array(size); return { bytes: bytes, view: new DataView(bytes.buffer) }; }
   function exportBackup(settings, entries, onStep) {
     var savedScope = scope;
-    return records().then(function (rows) {
+    return records(true).then(function (rows) {
       if (!rows.length) throw new Error('本机还没有照片，请先保存历史照片');
       var manifest = { format: 'prettier-photos-v1', scope: savedScope, settings: settings || {}, entries: entries || [], photos: rows.map(function (r, i) {
         return { path: r.path, sha: r.sha || '', file: 'photos/' + i + '.jpg', mime: r.blob.type || 'image/jpeg' };
       }) };
       var files = [{ name: 'prettier-photos.json', blob: new Blob([JSON.stringify(manifest)], { type: 'application/json' }) }];
-      rows.forEach(function (r, i) { files.push({ name: 'photos/' + i + '.jpg', blob: r.blob }); });
+      rows.forEach(function (r, i) { files.push({ name: 'photos/' + i + '.jpg', path: r.path, sha: r.sha }); });
       var parts = [], central = [], offset = 0;
       return files.reduce(function (chain, file, i) {
         return chain.then(function () {
           if (onStep) onStep(i, rows.length);
-          return file.blob.arrayBuffer().then(function (buffer) {
+          var source = file.path ? get(file.path, file.sha) : Promise.resolve(file.blob);
+          return source.then(function (blob) { file.blob = blob; return blob.arrayBuffer(); }).then(function (buffer) {
             var name = new TextEncoder().encode(file.name), crc = crc32(new Uint8Array(buffer));
             if (offset + file.blob.size > 0xffffffff) throw new Error('照片备份超过 4GB，请分批备份');
             var local = header(30), v = local.view;

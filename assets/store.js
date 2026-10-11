@@ -668,6 +668,18 @@
             var r = store.put(item.value, item.key);
             if (r) r.onerror = function () { firstError = firstError || r.error; };
           });
+          // 与其他标签页的清理共用事务锁；旧存在性检查之后若文件被清理，
+          // 整笔回滚并重新生成文件，绝不提交悬空引用。
+          var supplied = {}, refs = {};
+          items.forEach(function (item) { supplied[item.key] = true; findMediaRefs(item.value, refs); });
+          Object.keys(refs).forEach(function (key) {
+            if (supplied[key]) return;
+            var r = store.count ? store.count(key) : store.get(key);
+            r.onsuccess = function () {
+              if (!r.result) { firstError = storageError('NotFoundError', '照片文件已变动，重新保存引用'); t.abort(); }
+            };
+            r.onerror = function () { firstError = firstError || r.error; };
+          });
         } catch (err) {
           try { if (t) t.abort(); } catch (e) {}
           finish(err);
@@ -707,24 +719,163 @@
       resetDB(); return readCache(key, true);
     });
   }
+  /* 照片单独存一份；草稿、队列、路径记录只保存引用。
+     哈希去重也覆盖同一图片的不同 Blob 实例，所有字节与引用在同一事务提交。 */
+  var MEDIA_PREFIX = '__media:', mediaKeys = new WeakMap();
+  var mediaMutations = Promise.resolve(), mediaCleanupTimer = null;
+  function copyCacheValue(value) {
+    if (!value || typeof value !== 'object' || value instanceof Blob || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return value;
+    var out = Array.isArray(value) ? [] : {};
+    Object.keys(value).forEach(function (key) { out[key] = copyCacheValue(value[key]); });
+    return out;
+  }
+  function sequenceMedia(run) {
+    var next = mediaMutations.catch(function () {}).then(run);
+    mediaMutations = next; return next;
+  }
+  function mediaExists(key, tried) {
+    return db().then(function (d) {
+      return new Promise(function (resolve, reject) {
+        var store = d.transaction(STORE, 'readonly').objectStore(STORE);
+        var r = store.count ? store.count(key) : store.get(key);
+        r.onsuccess = function () { resolve(!!r.result); };
+        r.onerror = function () { reject(r.error || storageError('UnknownError', '本机照片索引读取失败')); };
+      });
+    }).catch(function (err) {
+      if (tried || !transientStorage(err)) throw err;
+      resetDB(); return mediaExists(key, true);
+    });
+  }
+  function prepareMedia(value, assets) {
+    if (value instanceof Blob) {
+      var cached = mediaKeys.get(value);
+      var identity = cached ? Promise.resolve(cached) : value.arrayBuffer().then(function (bytes) {
+        return crypto.subtle.digest('SHA-256', bytes).then(function (digest) {
+          var hex = Array.from(new Uint8Array(digest)).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+          return { key: MEDIA_PREFIX + hex, bytes: bytes };
+        });
+      });
+      return identity.then(function (info) {
+        var key = info.key;
+        var ref = { __prettierMedia: key, type: value.type || '', name: value.name || '', lastModified: value.lastModified || 0, size: value.size };
+        mediaKeys.set(value, { key: key });
+        if (assets[key]) return ref;
+        return mediaExists(key).then(function (existing) {
+          if (existing) return ref;
+          return (info.bytes ? Promise.resolve(info.bytes) : value.arrayBuffer()).then(function (bytes) {
+            assets[key] = { __prettierBinary: 1, bytes: bytes, type: value.type || '', name: '', lastModified: 0 };
+            return ref;
+          });
+        });
+      });
+    }
+    if (!value || typeof value !== 'object' || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return Promise.resolve(value);
+    var out = Array.isArray(value) ? [] : {};
+    return Object.keys(value).reduce(function (chain, key) {
+      return chain.then(function () { return prepareMedia(value[key], assets); }).then(function (next) { out[key] = next; });
+    }, Promise.resolve()).then(function () { return out; });
+  }
+  function restoreMedia(value, reads) {
+    if (!value || typeof value !== 'object' || value instanceof Blob || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return Promise.resolve(value);
+    if (typeof value.__prettierMedia === 'string' && value.__prettierMedia.indexOf(MEDIA_PREFIX) === 0) {
+      var key = value.__prettierMedia; reads = reads || {};
+      if (!reads[key]) reads[key] = readCache(key);
+      return reads[key].then(function (saved) {
+        if (!(saved instanceof Blob)) throw storageError('NotFoundError', '本机照片文件缺失，请保留任务并从照片备份恢复');
+        var blob = saved;
+        if (value.name && typeof File !== 'undefined') blob = new File([saved], value.name, { type: value.type || saved.type, lastModified: value.lastModified || 0 });
+        else if (value.type && value.type !== saved.type) blob = saved.slice(0, saved.size, value.type);
+        mediaKeys.set(blob, { key: key });
+        return blob;
+      });
+    }
+    var out = Array.isArray(value) ? [] : {}; reads = reads || {};
+    return Object.keys(value).reduce(function (chain, key) {
+      return chain.then(function () { return restoreMedia(value[key], reads); }).then(function (next) { out[key] = next; });
+    }, Promise.resolve()).then(function () { return out; });
+  }
+  function referencedWrite(items) {
+    var snapshot = items.map(function (item) { return { key: item.key, value: copyCacheValue(item.value) }; });
+    return sequenceMedia(function () {
+      function save(tried) {
+        var assets = {}, metadata = [];
+        return snapshot.reduce(function (chain, item) {
+          return chain.then(function () { return prepareMedia(item.value, assets); }).then(function (value) { metadata.push({ key: item.key, value: value }); });
+        }, Promise.resolve()).then(function () {
+          var files = Object.keys(assets).map(function (key) { return { key: key, value: assets[key] }; });
+          return writeCache(files.concat(metadata));
+        }).catch(function (err) {
+          if (!tried && err.name === 'NotFoundError') return save(true);
+          throw err;
+        });
+      }
+      return save(false);
+    }).then(function () { scheduleMediaCleanup(); });
+  }
+  function findMediaRefs(value, refs) {
+    if (!value || typeof value !== 'object' || value instanceof Blob || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return;
+    if (typeof value.__prettierMedia === 'string' && value.__prettierMedia.indexOf(MEDIA_PREFIX) === 0) refs[value.__prettierMedia] = true;
+    Object.keys(value).forEach(function (key) { findMediaRefs(value[key], refs); });
+  }
+  function collectMedia() {
+    clearTimeout(mediaCleanupTimer);
+    return sequenceMedia(function () {
+      return db().then(function (d) {
+        return new Promise(function (resolve, reject) {
+          var t = d.transaction(STORE, 'readwrite'), store = t.objectStore(STORE), refs = {}, files = [], removed = 0;
+          // 只遍历键；读取小型引用记录，绝不为了清理把整个照片库加载进内存。
+          var pending = 0, ended = false, cleaned = false;
+          function removeUnused() {
+            if (!ended || pending || cleaned) return;
+            cleaned = true;
+            files.forEach(function (key) { if (!refs[key]) { store.delete(key); removed++; } });
+          }
+          var r = store.openKeyCursor();
+          r.onsuccess = function () {
+            var c = r.result;
+            if (!c) { ended = true; removeUnused(); return; }
+            if (String(c.key).indexOf(MEDIA_PREFIX) === 0) files.push(c.key);
+            else {
+              pending++;
+              var record = store.get(c.key);
+              record.onsuccess = function () { findMediaRefs(record.result, refs); pending--; removeUnused(); };
+            }
+            c.continue();
+          };
+          t.oncomplete = function () { resolve(removed); };
+          t.onerror = t.onabort = function () { reject(t.error || r.error || storageError('AbortError', '本机照片清理被中断')); };
+        });
+      });
+    });
+  }
+  function scheduleMediaCleanup() {
+    clearTimeout(mediaCleanupTimer);
+    mediaCleanupTimer = setTimeout(function () { collectMedia().catch(function () {}); }, 1500);
+  }
+
   function cacheGet(key, required) {
-    return readCache(key).catch(function (err) { if (required) throw describeStorageError(err); return null; });
+    return readCache(key).then(function (value) { return restoreMedia(value); }).catch(function (err) { if (required) throw describeStorageError(err); return null; });
   }
   function cachePut(key, value, required) {
-    return writeCache([{ key: key, value: value }]).catch(function (err) {
+    return referencedWrite([{ key: key, value: value }]).catch(function (err) {
       if (required) throw describeStorageError(err);
     });
   }
-  function cacheBatch(items) { return writeCache(items).catch(function (err) { throw describeStorageError(err); }); }
+  function cacheBatch(items) { return referencedWrite(items).catch(function (err) { throw describeStorageError(err); }); }
 
-  function cacheList(prefix) {
+  function cacheList(prefix, metadataOnly) {
     return db().then(function (d) {
       return new Promise(function (resolve, reject) {
         var rows = [];
-        var request = d.transaction(STORE, 'readonly').objectStore(STORE).openCursor();
+        var range = typeof IDBKeyRange !== 'undefined' ? IDBKeyRange.bound(prefix, prefix + '\uffff') : undefined;
+        var request = d.transaction(STORE, 'readonly').objectStore(STORE).openCursor(range);
         request.onsuccess = function () {
           var cursor = request.result;
-          if (!cursor) { resolve(rows); return; }
+          if (!cursor) {
+            if (metadataOnly) resolve(rows);
+            else resolve(Promise.all(rows.map(function (row) { return restoreMedia(row.value).then(function (v) { return { key: row.key, value: v }; }); })));
+            return;
+          }
           if (String(cursor.key).indexOf(prefix) === 0) rows.push({ key: cursor.key, value: decodeBinary(cursor.value) });
           cursor.continue();
         };
@@ -734,14 +885,14 @@
   }
 
   function cacheDelete(key) {
-    return db().then(function (d) {
+    return sequenceMedia(function () { return db().then(function (d) {
       return new Promise(function (resolve, reject) {
         var t = d.transaction(STORE, 'readwrite');
         t.objectStore(STORE).delete(key);
         t.oncomplete = function () { resolve(); };
         t.onerror = t.onabort = function () { reject(t.error || new Error('本机照片删除失败')); };
       });
-    });
+    }); }).then(function () { scheduleMediaCleanup(); });
   }
 
   function cacheClear() {
@@ -843,7 +994,7 @@
     readJSON: readJSON, readBlobBySha: readBlobBySha,
     commit: commit, commitDelete: commitDelete,
     utf8ToB64: utf8ToB64, b64ToUtf8: b64ToUtf8, b64ToBlob: b64ToBlob,
-    cacheGet: cacheGet, cachePut: cachePut, cacheList: cacheList, cacheDelete: cacheDelete, cacheClear: cacheClear,
+    cacheGet: cacheGet, cachePut: cachePut, cacheList: cacheList, collectMedia: collectMedia, cacheDelete: cacheDelete, cacheClear: cacheClear,
     goLocal: goLocal, isLocal: isLocal, pending: pending, drain: drain,
   };
 })();

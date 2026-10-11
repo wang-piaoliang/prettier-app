@@ -6070,6 +6070,33 @@
     }).catch(function () {});
   }
 
+  // 先保存处理好的照片再识别。失败重试复用它，避免再次解码和保留大原图。
+  function normalizedJobPhoto(job, index, file) {
+    if (job && (job.normalizedSources || []).indexOf(index) >= 0) return Promise.resolve(file);
+    return PrettierPhoto.normalize(file).then(function (r) {
+      if (!job || !job.sourceFiles) return r.blob;
+      var original = job.sourceFiles[index], previous = job.normalizedSources;
+      job.sourceFiles[index] = r.blob;
+      job.normalizedSources = (previous || []).concat([index]);
+      return persistQueue().then(function () { return r.blob; }).catch(function (err) {
+        job.sourceFiles[index] = original;
+        job.normalizedSources = previous;
+        throw err;
+      });
+    });
+  }
+
+  function completeJobPhoto(job, index) {
+    var original = job.sourceFiles && job.sourceFiles[index];
+    job.completed.push(index);
+    if (job.sourceFiles) job.sourceFiles[index] = null;
+    return persistQueue().catch(function (err) {
+      job.completed = job.completed.filter(function (i) { return i !== index; });
+      if (job.sourceFiles) job.sourceFiles[index] = original;
+      throw err;
+    });
+  }
+
   function shootProductJob(pid, list, step, job) {
     var added = 0, filled = 0, hits = 0, noDate = 0, errors = [];
 
@@ -6077,7 +6104,7 @@
       return prev.then(function () {
         if (job && job.completed.indexOf(i) >= 0) return null;
         step('第 ' + (i + 1) + '/' + list.length + ' 张');
-        return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+        return normalizedJobPhoto(job, i, f);
       }).then(function (blob) {
         if (!blob) return null;
         // 文件名是内容指纹：同一张再传一次，路径一样，不会挂成两张
@@ -6128,7 +6155,7 @@
         });
         return saveProducts(next, '产品库：补充第 ' + (i + 1) + '/' + list.length + ' 张',
                             [{ path: one.path, blob: one.blob }]).then(function () {
-          if (job && !one.recognitionError) { job.completed.push(i); return persistQueue(); }
+          if (job && !one.recognitionError) return completeJobPhoto(job, i);
         });
       }).catch(function (err) { errors.push('第 ' + (i + 1) + ' 张：' + (err.message || err)); });
     }, Promise.resolve()).then(function () {
@@ -6293,7 +6320,7 @@
       return chain.then(function () {
         if (job && job.completed.indexOf(idx) >= 0) return null;
         step('第 ' + (idx + 1) + '/' + files.length + ' 张');
-        return PrettierPhoto.normalize(f).then(function (r) { return r.blob; });
+        return normalizedJobPhoto(job, idx, f);
       }).then(function (blob) {
         if (!blob) return;
         return PrettierAI.identifyProducts([blob]).then(function (found) {
@@ -6371,7 +6398,7 @@
           return saveProducts(merged,
             '产品库：' + (newOnes.length ? '新增 ' + newOnes.length + ' 件' : '补全信息'),
             [{ path: path, blob: blob }]).then(function () {
-              if (job) { job.completed.push(idx); return persistQueue(); }
+              if (job) return completeJobPhoto(job, idx);
             });
           });
         });
