@@ -4244,6 +4244,7 @@
     var host = $('#view-trend');
     host.innerHTML =
       '<div class="section-title">对比</div>' +
+      '<button class="btn cmp-zoom-open" id="cmpZoomOpen" type="button">局部放大对比</button>' +
       '<div class="cmp-grid">' + col(pair[0], 0) + col(pair[1], 1) + '</div>' +
       '<div class="card" style="margin-top:16px">' +
         (same
@@ -4259,6 +4260,12 @@
     host.classList.add('active');
     hydratePhotos(host);
     on('#cmpBack', 'click', function () { cmpSel = []; cmpPick = [0, 0]; go('timeline'); });
+    on('#cmpZoomOpen', 'click', function () {
+      if (!pair.every(function (e) { return (e.photos || []).length; })) return toast('两条记录都需要有照片', true);
+      window.PrettierCompare.open(pair.map(function (e, side) {
+        return { label: fmtDate(e.date) + ' ' + fmtTime(e.at), url: photoURL(e.photos[cmpPick[side]]) };
+      }));
+    });
     host.onclick = function (ev) {
       var th = ev.target.closest('[data-cmp-pick]');
       if (!th) return;
